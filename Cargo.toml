@@ -1,0 +1,19 @@
+[package]
+name = "graze"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/jan-krueger/graze"
+
+[dependencies]
+duckdb = { version = "1.4", features = ["bundled"] }
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+unicode-width = "0.2"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
