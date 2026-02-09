@@ -48,10 +48,7 @@ impl Widget for SqlPad<'_> {
             .as_deref()
             .unwrap_or("unknown");
 
-        let header_text = format!(
-            " SQL | Table: {} | F5: execute | Ctrl-e: execute | Esc: cancel ",
-            table_name
-        );
+        let header_text = format!(" SQL | Table: {} ", table_name);
         buf.set_string(area.x, header_y, &header_text, header_style);
 
         if let Some(ref err) = self.app.sql.error {

@@ -28,8 +28,8 @@ impl SortOrder {
 
     pub fn indicator(&self) -> &'static str {
         match self {
-            SortOrder::Ascending => "^",
-            SortOrder::Descending => "v",
+            SortOrder::Ascending => "▲",
+            SortOrder::Descending => "▼",
         }
     }
 }

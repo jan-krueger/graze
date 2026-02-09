@@ -145,23 +145,21 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
-        // Text search
-        KeyCode::Char('?') => {
-            app.mode = AppMode::Search;
-            // Pre-fill with current search term
-            if let Some(ref term) = app.search.active_search {
-                app.search.input = term.clone();
-            }
-        }
-
         KeyCode::Esc => {
-            // Priority chain: clear search first, then filter
-            if app.search.active_search.is_some() {
+            let had_search = app.search.active_search.is_some();
+            let had_filter = app.filter.active_filter.is_some();
+
+            // Clear both at once
+            if had_search {
                 app.search.active_search = None;
-                app.search.input.clear();
-            } else if app.filter.active_filter.is_some() {
+            }
+            if had_filter {
                 app.send_action(Action::ResetFilter);
                 app.filter.input.clear();
+            }
+
+            if had_search && !had_filter {
+                app.status_message = Some("Search cleared".to_string());
             }
         }
 

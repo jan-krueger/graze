@@ -5,6 +5,55 @@ use duckdb::arrow::record_batch::RecordBatch;
 
 use crate::event::SortState;
 
+/// Detect whether user input is a SQL filter expression or a plain text search.
+///
+/// Returns `true` if the input looks like a filter (contains column refs,
+/// comparison operators, or SQL keywords). Returns `false` for plain
+/// substring searches.
+pub fn is_filter_expression(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Contains $ → column reference → filter
+    if trimmed.contains('$') {
+        return true;
+    }
+
+    // Starts with " → quoted identifier → filter
+    if trimmed.starts_with('"') {
+        return true;
+    }
+
+    // Contains comparison operators → filter
+    if trimmed.contains("!=")
+        || trimmed.contains("<>")
+        || trimmed.contains("<=")
+        || trimmed.contains(">=")
+    {
+        return true;
+    }
+    // Single = < > but avoid false positives on plain text
+    for op in ['=', '<', '>'] {
+        if trimmed.contains(op) {
+            return true;
+        }
+    }
+
+    // Contains SQL keywords as whole words → filter
+    let upper = format!(" {} ", trimmed.to_uppercase());
+    for kw in [
+        " LIKE ", " ILIKE ", " IS ", " IN ", " BETWEEN ", " AND ", " OR ", " NOT ",
+    ] {
+        if upper.contains(kw) {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
     Row,
@@ -119,16 +168,14 @@ impl FilterState {
     }
 }
 
-/// Search mode state: input and active search term.
+/// Search state: active search term for highlighting and n/N navigation.
 pub struct SearchState {
-    pub input: String,
     pub active_search: Option<String>,
 }
 
 impl SearchState {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
             active_search: None,
         }
     }

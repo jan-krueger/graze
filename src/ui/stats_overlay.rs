@@ -253,11 +253,7 @@ impl Widget for StatsOverlay<'_> {
                 } else if column_name_idx == Some(col_idx) {
                     if let Some(ref fmt) = formatters[col_idx] {
                         let val = fmt.value(batch_row).to_string();
-                        let style = match row_type_colors[batch_row] {
-                            Some(c) => row_style.fg(c),
-                            None => row_style,
-                        };
-                        (val, style)
+                        (val, row_style.fg(Color::Cyan))
                     } else {
                         ("?".to_string(), row_style)
                     }

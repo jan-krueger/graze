@@ -1,32 +1,5 @@
-use crossterm::event::KeyCode;
-
-use crate::app::{App, AppMode};
+use crate::app::App;
 use crate::state::SelectionMode;
-
-pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            if !app.search.input.is_empty() {
-                app.search.active_search = Some(app.search.input.clone());
-            } else {
-                app.search.active_search = None;
-            }
-            app.mode = AppMode::Normal;
-        }
-        KeyCode::Esc => {
-            // Cancel search mode without changing active_search
-            app.search.input.clear();
-            app.mode = AppMode::Normal;
-        }
-        KeyCode::Backspace => {
-            app.search.input.pop();
-        }
-        KeyCode::Char(c) => {
-            app.search.input.push(c);
-        }
-        _ => {}
-    }
-}
 
 /// Jump to the next cell containing the active search term.
 pub(crate) fn jump_to_next_match(app: &mut App) {

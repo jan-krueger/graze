@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
-use crate::state::SelectionMode;
+use crate::state::{is_filter_expression, SelectionMode};
 
 pub struct StatusBar<'a> {
     app: &'a App,
@@ -27,9 +27,29 @@ impl Widget for StatusBar<'_> {
             bg_style,
         );
 
-        // Mode indicator
-        let mode_str = self.app.mode.badge();
-        buf.set_string(area.x, area.y, mode_str, self.app.mode.badge_style());
+        // Mode indicator — dynamic badge for Filter mode
+        let (mode_str, mode_style) = if self.app.mode == AppMode::Filter {
+            if is_filter_expression(&self.app.filter.input) {
+                (
+                    " FILTER ",
+                    Style::default()
+                        .bg(Color::Green)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    " SEARCH ",
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
+        } else {
+            (self.app.mode.badge(), self.app.mode.badge_style())
+        };
+        buf.set_string(area.x, area.y, mode_str, mode_style);
 
         let mut x = area.x + mode_str.len() as u16;
 

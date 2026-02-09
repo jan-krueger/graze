@@ -11,13 +11,24 @@ use crate::event::SortState;
 use crate::state::SelectionMode;
 use crate::ui::table_render::{build_formatters, compute_column_widths, truncate_to_width, visible_columns};
 
+/// Convert a 1-based position to a subscript digit character (₁₂₃…₉).
+/// Falls back to regular digits for values > 9.
+pub(crate) fn subscript_digit(n: usize) -> char {
+    const SUBSCRIPTS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
+    if n < SUBSCRIPTS.len() {
+        SUBSCRIPTS[n]
+    } else {
+        char::from_digit(n as u32, 10).unwrap_or('?')
+    }
+}
+
 /// Build the sort indicator suffix for a column header.
 fn sort_indicator_string(state: &SortState, col_name: &str, multi: bool) -> String {
     if let Some(pos) = state.position(col_name) {
         let order = state.order_for(col_name).unwrap();
         let arrow = order.indicator();
         if multi {
-            format!(" {}{}", arrow, pos + 1)
+            format!(" {}{}", arrow, subscript_digit(pos + 1))
         } else {
             format!(" {}", arrow)
         }

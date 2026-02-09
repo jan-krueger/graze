@@ -2,15 +2,22 @@ use crossterm::event::KeyCode;
 
 use crate::app::{App, AppMode};
 use crate::event::Action;
+use crate::state::is_filter_expression;
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Enter => {
             app.filter.autocomplete_active = false;
             if !app.filter.input.is_empty() {
-                let expanded = expand_dollar_refs(&app.filter.input);
-                app.filter.input = expanded.clone();
-                app.send_action(Action::Filter(expanded));
+                if is_filter_expression(&app.filter.input) {
+                    // Filter path: expand $refs and send SQL filter
+                    let expanded = expand_dollar_refs(&app.filter.input);
+                    app.filter.input = expanded.clone();
+                    app.send_action(Action::Filter(expanded));
+                } else {
+                    // Search path: plain text substring search
+                    app.search.active_search = Some(app.filter.input.clone());
+                }
             }
             app.mode = AppMode::Normal;
         }

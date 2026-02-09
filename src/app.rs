@@ -23,7 +23,6 @@ const BUFFER_MULTIPLIER: usize = 5;
 pub enum AppMode {
     Normal,
     Filter,
-    Search,
     Sql,
     Stats,
     Quitting,
@@ -34,7 +33,6 @@ impl AppMode {
         match self {
             AppMode::Normal => " NORMAL ",
             AppMode::Filter => " FILTER ",
-            AppMode::Search => " SEARCH ",
             AppMode::Sql => " SQL ",
             AppMode::Stats => " STATS ",
             AppMode::Quitting => " QUIT ",
@@ -49,10 +47,6 @@ impl AppMode {
                 .add_modifier(Modifier::BOLD),
             AppMode::Filter => Style::default()
                 .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Search => Style::default()
-                .bg(Color::Yellow)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
             AppMode::Sql => Style::default()
@@ -75,8 +69,7 @@ impl AppMode {
             AppMode::Normal => &[
                 ("Tab", "mode"),
                 ("q", "quit"),
-                ("/", "filter"),
-                ("?", "search"),
+                ("/", "query"),
                 ("f", "col-filter"),
                 ("s", "sort"),
                 ("S", "stats"),
@@ -88,7 +81,6 @@ impl AppMode {
                 ("$col", "autocomplete"),
                 ("Tab", "complete"),
             ],
-            AppMode::Search => &[("Enter", "apply"), ("Esc", "cancel")],
             AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Esc", "cancel")],
             AppMode::Stats => &[("j/k", "scroll"), ("g/G", "top/bottom"), ("Esc", "close")],
             AppMode::Quitting => &[],
@@ -115,7 +107,7 @@ impl AppMode {
                 Constraint::Length(SQL_PAD_HEIGHT),
                 Constraint::Length(1),
             ],
-            AppMode::Filter | AppMode::Search => vec![
+            AppMode::Filter => vec![
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -130,11 +122,6 @@ impl AppMode {
                 let filter_y = area_height - 2;
                 let cursor_x = 8 + app.filter.input.len() as u16;
                 Some((cursor_x, filter_y))
-            }
-            AppMode::Search => {
-                let search_y = area_height - 2;
-                let cursor_x = 8 + app.search.input.len() as u16;
-                Some((cursor_x, search_y))
             }
             AppMode::Sql => {
                 let sql_input_start_y = area_height.saturating_sub(6);
@@ -221,6 +208,7 @@ impl App {
     /// Compute how many columns are visible at the current terminal width and column offset.
     /// Uses the same column-width logic as the renderer for exact parity.
     pub fn visible_col_count(&self) -> usize {
+        use crate::ui::table::subscript_digit;
         use crate::ui::table_render::{build_formatters, compute_column_widths, visible_columns};
 
         let schema = match self.data.schema.as_ref() {
@@ -253,7 +241,7 @@ impl App {
                     let order = sort_state.order_for(name).unwrap();
                     let arrow = order.indicator();
                     if multi {
-                        format!(" {}{}", arrow, pos + 1)
+                        format!(" {}{}", arrow, subscript_digit(pos + 1))
                     } else {
                         format!(" {}", arrow)
                     }

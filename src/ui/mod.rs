@@ -11,6 +11,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
+use crate::state::is_filter_expression;
 
 use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
@@ -31,7 +32,6 @@ impl<'a> AppView<'a> {
 impl Widget for AppView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let show_filter = matches!(self.app.mode, AppMode::Filter);
-        let show_search = matches!(self.app.mode, AppMode::Search);
         let show_sql = matches!(self.app.mode, AppMode::Sql);
         let show_stats = matches!(self.app.mode, AppMode::Stats);
 
@@ -42,8 +42,6 @@ impl Widget for AppView<'_> {
             StatsOverlay::new(self.app).render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
         } else if show_sql {
-            // In SQL mode, if we have SQL results, render them in the table area;
-            // otherwise show the normal table.
             if self.app.sql.result.is_some() {
                 SqlResultTableView::new(self.app).render(chunks[0], buf);
             } else {
@@ -53,15 +51,15 @@ impl Widget for AppView<'_> {
             StatusBar::new(self.app).render(chunks[2], buf);
         } else if show_filter {
             TableView::new(self.app).render(chunks[0], buf);
-            InputBar::new("Filter: ", Color::Green, &self.app.filter.input)
+            let (prompt, color) = if is_filter_expression(&self.app.filter.input) {
+                ("Filter: ", Color::Green)
+            } else {
+                ("Search: ", Color::Yellow)
+            };
+            InputBar::new(prompt, color, &self.app.filter.input)
                 .render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
             render_autocomplete_popup(self.app, chunks[1].y, area, buf);
-        } else if show_search {
-            TableView::new(self.app).render(chunks[0], buf);
-            InputBar::new("Search: ", Color::Yellow, &self.app.search.input)
-                .render(chunks[1], buf);
-            StatusBar::new(self.app).render(chunks[2], buf);
         } else {
             TableView::new(self.app).render(chunks[0], buf);
             StatusBar::new(self.app).render(chunks[1], buf);

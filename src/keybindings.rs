@@ -1,4 +1,4 @@
-/// Keybindings for graze (Phase 6)
+/// Keybindings for graze (Phase 7)
 ///
 /// # Normal Mode
 ///
@@ -18,25 +18,38 @@
 /// | $         | Go to last column                           |
 /// | s         | Cycle sort on current column                |
 /// | S         | Open stats overlay (SUMMARIZE)              |
-/// | /         | Enter filter mode                           |
-/// | f         | Enter filter mode pre-filled with column    |
-/// | ?         | Enter text search mode                      |
+/// | /         | Open query bar                              |
+/// | f         | Open query bar pre-filled with column       |
 /// | e         | Enter SQL scratchpad mode                   |
-/// | Esc       | Clear search (1st), then reset filter (2nd) |
+/// | Esc       | Clear filter and search                     |
 /// | n         | Jump to next search match                   |
 /// | N         | Jump to previous search match               |
 ///
-/// # Filter Mode
+/// # Query Mode
 ///
 /// | Key       | Action                                     |
 /// |-----------|--------------------------------------------|
-/// | Enter     | Expand $refs and apply filter               |
-/// | Esc       | Dismiss autocomplete, or cancel filter      |
+/// | Enter     | Apply (auto-detects filter vs search)       |
+/// | Esc       | Dismiss autocomplete, or cancel             |
 /// | Tab       | Accept autocomplete suggestion              |
 /// | Up/Down   | Navigate autocomplete suggestions           |
 /// | Backspace | Delete last character                       |
 /// | $         | Start column reference (triggers autocomplete) |
-/// | Any char  | Append to filter input                      |
+/// | Any char  | Append to input                             |
+///
+/// ## Auto-Detection
+///
+/// The query bar automatically detects whether input is a SQL filter
+/// expression or a plain text search:
+///
+/// **Filter** (green badge) is detected when input contains:
+/// - `$` (column reference)
+/// - Starts with `"` (quoted identifier)
+/// - Comparison operators: `=`, `<`, `>`, `!=`, `<>`
+/// - SQL keywords: `LIKE`, `ILIKE`, `IS`, `IN`, `BETWEEN`, `AND`, `OR`, `NOT`
+///
+/// **Search** (yellow badge) is detected for all other input (plain
+/// substring match, case-insensitive).
 ///
 /// ## $ Column Shorthand
 ///
@@ -45,27 +58,6 @@
 /// spaces, use `$"Column Name"` which expands to `"Column Name"`.
 /// As you type after `$`, an autocomplete popup appears with matching
 /// column names. Press Tab to accept the selected suggestion.
-///
-/// # Search Mode
-///
-/// | Key       | Action                                     |
-/// |-----------|--------------------------------------------|
-/// | Enter     | Apply search, return to Normal with highlights |
-/// | Esc       | Cancel search, return to Normal             |
-/// | Backspace | Delete last character                       |
-/// | Any char  | Append to search input                     |
-///
-/// ## Text Search
-///
-/// Press `?` to enter search mode. Type a search term (plain substring,
-/// case-insensitive). Press Enter to apply the search. Matching cells
-/// are highlighted with yellow text on a black background. Use `n` to
-/// jump to the next matching cell and `N` for the previous one. Press
-/// `Esc` in Normal mode to clear the search. Pressing `?` again
-/// pre-fills the search bar with the current search term.
-///
-/// `n`/`N` always navigate search matches regardless of filter state.
-/// Use `j`/`k` or arrow keys to navigate rows when a filter is active.
 ///
 /// # SQL Mode
 ///
@@ -96,8 +88,8 @@
 /// # Sort Cycling
 ///
 /// Pressing `s` on a column cycles through:
-/// - No sort -> Ascending (^)
-/// - Ascending -> Descending (v)
+/// - No sort -> Ascending (▲)
+/// - Ascending -> Descending (▼)
 /// - Descending -> No sort
 ///
 /// # Stats Overlay
@@ -120,9 +112,13 @@
 ///
 /// # Search Highlighting
 ///
-/// When a text search is active (via `?`), any visible cell whose text
-/// contains the search term (case-insensitive) is highlighted with
-/// yellow foreground on black background. This visual highlight is
-/// applied on top of row/column selection styles.
+/// When a text search is active (via `/` with plain text), any visible
+/// cell whose text contains the search term (case-insensitive) is
+/// highlighted with yellow foreground on black background. Use `n` to
+/// jump to the next matching cell and `N` for the previous one. Press
+/// `Esc` in Normal mode to clear the search.
+///
+/// `n`/`N` always navigate search matches regardless of filter state.
+/// Use `j`/`k` or arrow keys to navigate rows when a filter is active.
 #[allow(dead_code)]
-pub const KEYBINDINGS_VERSION: u8 = 7;
+pub const KEYBINDINGS_VERSION: u8 = 8;
