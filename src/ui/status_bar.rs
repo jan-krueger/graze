@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
-use crate::state::{is_filter_expression, SelectionMode};
+use crate::state::{SearchMode, SelectionMode};
 
 pub struct StatusBar<'a> {
     app: &'a App,
@@ -27,28 +27,9 @@ impl Widget for StatusBar<'_> {
             bg_style,
         );
 
-        // Mode indicator — dynamic badge for Filter mode
-        let (mode_str, mode_style) = if self.app.mode == AppMode::Filter {
-            if is_filter_expression(&self.app.filter.input) {
-                (
-                    " FILTER ",
-                    Style::default()
-                        .bg(Color::Green)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (
-                    " SEARCH ",
-                    Style::default()
-                        .bg(Color::Yellow)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        } else {
-            (self.app.mode.badge(), self.app.mode.badge_style())
-        };
+        // Mode indicator
+        let mode_str = self.app.mode.badge();
+        let mode_style = self.app.mode.badge_style();
         buf.set_string(area.x, area.y, mode_str, mode_style);
 
         let mut x = area.x + mode_str.len() as u16;
@@ -99,8 +80,20 @@ impl Widget for StatusBar<'_> {
 
         // Active search indicator
         if let Some(ref search) = self.app.search.active_search {
-            let search_str = format!(" [Search: {}] ", search);
-            let search_style = bg_style.fg(Color::Yellow);
+            let (label, color) = match self.app.search.search_mode {
+                SearchMode::Regex => ("Regex", Color::Magenta),
+                SearchMode::Plain => ("Search", Color::Yellow),
+            };
+            let search_str = match (self.app.search.match_index, self.app.search.match_count) {
+                (Some(idx), Some(total)) => {
+                    format!(" [{}: {} ({}/{} matches)] ", label, search, idx, total)
+                }
+                (None, Some(total)) => {
+                    format!(" [{}: {} ({} matches)] ", label, search, total)
+                }
+                _ => format!(" [{}: {}] ", label, search),
+            };
+            let search_style = bg_style.fg(color);
             buf.set_string(x, area.y, &search_str, search_style);
             x += search_str.len() as u16;
         }

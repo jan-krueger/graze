@@ -118,6 +118,45 @@ impl Worker {
                         }
                     }
                 }
+                Action::FindMatch {
+                    term,
+                    current_row,
+                    forward,
+                    is_regex,
+                } => {
+                    if let Some(ref provider) = self.provider {
+                        match provider.find_match_row(&term, current_row, forward, is_regex) {
+                            Ok(Some(row)) => {
+                                let match_index = provider
+                                    .match_index_at(&term, row, is_regex)
+                                    .ok();
+                                let _ = self.event_tx.send(DataEvent::MatchFound { row, match_index });
+                            }
+                            Ok(None) => {
+                                let _ = self.event_tx.send(DataEvent::MatchNotFound);
+                            }
+                            Err(e) => {
+                                let _ = self.event_tx.send(DataEvent::Error(format!(
+                                    "Search failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                }
+                Action::CountMatches { term, is_regex } => {
+                    if let Some(ref provider) = self.provider {
+                        match provider.count_matches(&term, is_regex) {
+                            Ok(count) => {
+                                let _ = self.event_tx.send(DataEvent::MatchCount { count });
+                            }
+                            Err(e) => {
+                                let _ = self.event_tx.send(DataEvent::Error(format!(
+                                    "Count failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                }
                 Action::ExecuteSql(sql) => {
                     if let Some(ref provider) = self.provider {
                         match provider.execute_sql(&sql) {

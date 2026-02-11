@@ -108,6 +108,125 @@ impl DuckDbBackend {
         &self.table_name
     }
 
+    /// Build a SQL condition that matches any column against the search term.
+    fn build_match_clause(&self, term: &str, is_regex: bool) -> Option<String> {
+        let fields = self.schema.fields();
+        if fields.is_empty() {
+            return None;
+        }
+        let escaped = term.replace('\'', "''");
+        let conditions: Vec<String> = fields
+            .iter()
+            .map(|f| {
+                let col = format!("\"{}\"", f.name());
+                if is_regex {
+                    format!("regexp_matches({}::VARCHAR, '(?i){}')", col, escaped)
+                } else {
+                    format!("{}::VARCHAR ILIKE '%{}%'", col, escaped)
+                }
+            })
+            .collect();
+        Some(conditions.join(" OR "))
+    }
+
+    /// Build the base query (SELECT * FROM table with filter + sort).
+    fn build_base_query(&self) -> String {
+        let mut base = format!("SELECT * FROM {}", self.table_name);
+        if let Some(ref filter) = self.current_filter {
+            base.push_str(&format!(" WHERE {filter}"));
+        }
+        if let Some(order_clause) = self.sort_state.to_sql() {
+            base.push_str(&format!(" ORDER BY {order_clause}"));
+        }
+        base
+    }
+
+    /// Count how many matches exist at or before the given row (1-based index).
+    pub fn match_index_at(&self, term: &str, row: usize, is_regex: bool) -> Result<usize> {
+        let match_clause = match self.build_match_clause(term, is_regex) {
+            Some(c) => c,
+            None => return Ok(0),
+        };
+        let base = self.build_base_query();
+        let sql = format!(
+            "WITH numbered AS (SELECT *, ROW_NUMBER() OVER () - 1 AS _rn FROM ({base})) \
+             SELECT COUNT(*) FROM numbered WHERE ({match_clause}) AND _rn <= {row}"
+        );
+        let count: i64 = self.conn.query_row(&sql, [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    pub fn count_matches(&self, term: &str, is_regex: bool) -> Result<usize> {
+        let match_clause = match self.build_match_clause(term, is_regex) {
+            Some(c) => c,
+            None => return Ok(0),
+        };
+        let mut sql = format!("SELECT COUNT(*) FROM {}", self.table_name);
+        sql.push_str(" WHERE ");
+        if let Some(ref filter) = self.current_filter {
+            sql.push_str(&format!("({filter}) AND "));
+        }
+        sql.push_str(&format!("({match_clause})"));
+        let count: i64 = self.conn.query_row(&sql, [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
+    pub fn find_match_row(
+        &self,
+        term: &str,
+        current_row: usize,
+        forward: bool,
+        is_regex: bool,
+    ) -> Result<Option<usize>> {
+        let match_clause = match self.build_match_clause(term, is_regex) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let base = self.build_base_query();
+
+        // First: directional search from current position
+        let (dir_cmp, dir_order) = if forward {
+            (">", "ASC")
+        } else {
+            ("<", "DESC")
+        };
+
+        let directional_sql = format!(
+            "WITH numbered AS (SELECT *, ROW_NUMBER() OVER () - 1 AS _rn FROM ({base})) \
+             SELECT _rn FROM numbered WHERE ({match_clause}) AND _rn {dir_cmp} {current_row} \
+             ORDER BY _rn {dir_order} LIMIT 1"
+        );
+
+        if let Some(row) = self.query_single_usize(&directional_sql)? {
+            return Ok(Some(row));
+        }
+
+        // Wrap-around: search from the other end
+        let (wrap_cmp, wrap_order) = if forward {
+            ("<=", "ASC")
+        } else {
+            (">=", "DESC")
+        };
+
+        let wrap_sql = format!(
+            "WITH numbered AS (SELECT *, ROW_NUMBER() OVER () - 1 AS _rn FROM ({base})) \
+             SELECT _rn FROM numbered WHERE ({match_clause}) AND _rn {wrap_cmp} {current_row} \
+             ORDER BY _rn {wrap_order} LIMIT 1"
+        );
+
+        self.query_single_usize(&wrap_sql)
+    }
+
+    fn query_single_usize(&self, sql: &str) -> Result<Option<usize>> {
+        let result: std::result::Result<i64, _> =
+            self.conn.query_row(sql, [], |row| row.get(0));
+        match result {
+            Ok(v) => Ok(Some(v as usize)),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn execute_sql(&self, sql: &str) -> Result<RecordBatch> {
         let mut stmt = self
             .conn

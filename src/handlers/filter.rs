@@ -2,21 +2,40 @@ use crossterm::event::KeyCode;
 
 use crate::app::{App, AppMode};
 use crate::event::Action;
-use crate::state::is_filter_expression;
+use crate::state::SearchMode;
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Enter => {
             app.filter.autocomplete_active = false;
             if !app.filter.input.is_empty() {
-                if is_filter_expression(&app.filter.input) {
-                    // Filter path: expand $refs and send SQL filter
-                    let expanded = expand_dollar_refs(&app.filter.input);
-                    app.filter.input = expanded.clone();
-                    app.send_action(Action::Filter(expanded));
-                } else {
-                    // Search path: plain text substring search
-                    app.search.active_search = Some(app.filter.input.clone());
+                match app.mode {
+                    AppMode::Filter => {
+                        let expanded = expand_dollar_refs(&app.filter.input);
+                        app.filter.input = expanded.clone();
+                        app.send_action(Action::Filter(expanded));
+                    }
+                    AppMode::Regex => {
+                        app.search.search_mode = SearchMode::Regex;
+                        app.search.active_search = Some(app.filter.input.clone());
+                        app.search.match_count = None;
+                        app.search.match_index = None;
+                        app.send_action(Action::CountMatches {
+                            term: app.filter.input.clone(),
+                            is_regex: true,
+                        });
+                    }
+                    AppMode::Search => {
+                        app.search.search_mode = SearchMode::Plain;
+                        app.search.active_search = Some(app.filter.input.clone());
+                        app.search.match_count = None;
+                        app.search.match_index = None;
+                        app.send_action(Action::CountMatches {
+                            term: app.filter.input.clone(),
+                            is_regex: false,
+                        });
+                    }
+                    _ => unreachable!(),
                 }
             }
             app.mode = AppMode::Normal;
@@ -30,7 +49,8 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Tab => {
-            if app.filter.autocomplete_active
+            if app.mode == AppMode::Filter
+                && app.filter.autocomplete_active
                 && !app.filter.autocomplete_suggestions.is_empty()
             {
                 let idx = app
@@ -44,7 +64,8 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Up => {
-            if app.filter.autocomplete_active
+            if app.mode == AppMode::Filter
+                && app.filter.autocomplete_active
                 && !app.filter.autocomplete_suggestions.is_empty()
             {
                 if app.filter.autocomplete_index == 0 {
@@ -56,7 +77,8 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Down => {
-            if app.filter.autocomplete_active
+            if app.mode == AppMode::Filter
+                && app.filter.autocomplete_active
                 && !app.filter.autocomplete_suggestions.is_empty()
             {
                 app.filter.autocomplete_index = (app.filter.autocomplete_index + 1)
@@ -65,11 +87,15 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Backspace => {
             app.filter.input.pop();
-            update_autocomplete(app);
+            if app.mode == AppMode::Filter {
+                update_autocomplete(app);
+            }
         }
         KeyCode::Char(c) => {
             app.filter.input.push(c);
-            update_autocomplete(app);
+            if app.mode == AppMode::Filter {
+                update_autocomplete(app);
+            }
         }
         _ => {}
     }

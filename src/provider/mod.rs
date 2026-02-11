@@ -26,6 +26,15 @@ pub trait DataProvider: Send {
     fn apply_filter(&mut self, filter: &str) -> Result<usize>;
     fn reset_filters(&mut self) -> Result<usize>;
     fn execute_sql(&self, sql: &str) -> Result<RecordBatch>;
+    fn find_match_row(
+        &self,
+        term: &str,
+        current_row: usize,
+        forward: bool,
+        is_regex: bool,
+    ) -> Result<Option<usize>>;
+    fn count_matches(&self, term: &str, is_regex: bool) -> Result<usize>;
+    fn match_index_at(&self, term: &str, row: usize, is_regex: bool) -> Result<usize>;
 }
 
 pub fn create_provider(path: &Path) -> Result<Box<dyn DataProvider>> {

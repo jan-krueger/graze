@@ -92,20 +92,8 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('$') => {
-            if let Some(ref schema) = app.data.schema {
-                let len = schema.fields().len();
-                if len > 0 {
-                    match app.viewport.selection_mode {
-                        SelectionMode::Row => {
-                            app.viewport.column_offset = len - 1;
-                        }
-                        SelectionMode::Column => {
-                            app.viewport.selected_col = len - 1;
-                            app.adjust_column_view();
-                        }
-                    }
-                }
-            }
+            app.filter.input.clear();
+            app.mode = AppMode::Regex;
         }
 
         // Sort
@@ -128,10 +116,10 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             app.send_action(Action::ExecuteSql(format!("SUMMARIZE {table}")));
         }
 
-        // Filter
+        // Search / Filter
         KeyCode::Char('/') => {
-            app.mode = AppMode::Filter;
             app.filter.input.clear();
+            app.mode = AppMode::Search;
         }
         KeyCode::Char('f') => {
             // Column-specific filter shortcut: pre-fill with current column name
@@ -152,6 +140,8 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             // Clear both at once
             if had_search {
                 app.search.active_search = None;
+                app.search.match_count = None;
+                app.search.match_index = None;
             }
             if had_filter {
                 app.send_action(Action::ResetFilter);

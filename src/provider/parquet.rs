@@ -61,4 +61,22 @@ impl DataProvider for ParquetProvider {
     fn execute_sql(&self, sql: &str) -> Result<RecordBatch> {
         self.backend.execute_sql(sql)
     }
+
+    fn find_match_row(
+        &self,
+        term: &str,
+        current_row: usize,
+        forward: bool,
+        is_regex: bool,
+    ) -> Result<Option<usize>> {
+        self.backend.find_match_row(term, current_row, forward, is_regex)
+    }
+
+    fn count_matches(&self, term: &str, is_regex: bool) -> Result<usize> {
+        self.backend.count_matches(term, is_regex)
+    }
+
+    fn match_index_at(&self, term: &str, row: usize, is_regex: bool) -> Result<usize> {
+        self.backend.match_index_at(term, row, is_regex)
+    }
 }

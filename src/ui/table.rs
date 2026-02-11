@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::event::SortState;
-use crate::state::SelectionMode;
+use crate::state::{SearchMode, SelectionMode};
 use crate::ui::table_render::{build_formatters, compute_column_widths, truncate_to_width, visible_columns};
 
 /// Convert a 1-based position to a subscript digit character (₁₂₃…₉).
@@ -235,6 +235,34 @@ fn like_match(text: &[u8], pattern: &[u8]) -> bool {
     p == pattern.len()
 }
 
+enum SearchMatcher {
+    Plain(String),
+    Regex(regex::Regex),
+}
+
+impl SearchMatcher {
+    fn from_search_state(app: &App) -> Option<Self> {
+        let term = app.search.active_search.as_ref()?;
+        match app.search.search_mode {
+            SearchMode::Regex => {
+                let re = regex::RegexBuilder::new(term)
+                    .case_insensitive(true)
+                    .build()
+                    .ok()?;
+                Some(SearchMatcher::Regex(re))
+            }
+            SearchMode::Plain => Some(SearchMatcher::Plain(term.to_lowercase())),
+        }
+    }
+
+    fn is_match(&self, val: &str) -> bool {
+        match self {
+            SearchMatcher::Plain(term) => val.to_lowercase().contains(term.as_str()),
+            SearchMatcher::Regex(re) => re.is_match(val),
+        }
+    }
+}
+
 pub struct TableView<'a> {
     app: &'a App,
 }
@@ -388,12 +416,7 @@ impl Widget for TableView<'_> {
                 .position(|f| f.name().eq_ignore_ascii_case(&sf.column))
         });
 
-        let search_term: Option<String> = self
-            .app
-            .search
-            .active_search
-            .as_ref()
-            .map(|s| s.to_lowercase());
+        let search_matcher = SearchMatcher::from_search_state(self.app);
 
         let data_start_y = header_y + 1;
         let max_display_rows = (area.height - 1) as usize;
@@ -475,8 +498,8 @@ impl Widget for TableView<'_> {
                     } else {
                         base_style
                     };
-                    if let Some(ref term) = search_term {
-                        if val.to_lowercase().contains(term.as_str()) {
+                    if let Some(ref matcher) = search_matcher {
+                        if matcher.is_match(&val) {
                             style = style.fg(Color::Yellow).bg(Color::Black);
                         }
                     }

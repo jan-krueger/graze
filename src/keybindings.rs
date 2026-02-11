@@ -1,4 +1,4 @@
-/// Keybindings for graze (Phase 7)
+/// Keybindings for graze (Phase 8)
 ///
 /// # Normal Mode
 ///
@@ -15,41 +15,52 @@
 /// | h / Left  | Scroll columns left                         |
 /// | l / Right | Scroll columns right                        |
 /// | 0         | Go to first column                          |
-/// | $         | Go to last column                           |
 /// | s         | Cycle sort on current column                |
 /// | S         | Open stats overlay (SUMMARIZE)              |
-/// | /         | Open query bar                              |
-/// | f         | Open query bar pre-filled with column       |
+/// | /         | Open search bar (plain text)                |
+/// | $         | Open regex search bar                       |
+/// | f         | Open filter bar pre-filled with column      |
 /// | e         | Enter SQL scratchpad mode                   |
 /// | Esc       | Clear filter and search                     |
-/// | n         | Jump to next search match                   |
-/// | N         | Jump to previous search match               |
+/// | n         | Jump to next search match (full dataset)     |
+/// | N         | Jump to previous search match (full dataset) |
 ///
-/// # Query Mode
+/// # Search Mode (`/`)
+///
+/// Plain text substring search (case-insensitive). Yellow badge.
 ///
 /// | Key       | Action                                     |
 /// |-----------|--------------------------------------------|
-/// | Enter     | Apply (auto-detects filter vs search)       |
+/// | Enter     | Apply search                               |
+/// | Esc       | Cancel                                     |
+/// | Backspace | Delete last character                       |
+/// | Any char  | Append to input                             |
+///
+/// # Regex Mode (`$`)
+///
+/// Regex search via DuckDB `regexp_matches()` (case-insensitive).
+/// Magenta badge.
+///
+/// | Key       | Action                                     |
+/// |-----------|--------------------------------------------|
+/// | Enter     | Apply regex search                         |
+/// | Esc       | Cancel                                     |
+/// | Backspace | Delete last character                       |
+/// | Any char  | Append to input                             |
+///
+/// # Filter Mode (`f`)
+///
+/// SQL WHERE-clause filter with `$column` autocomplete. Green badge.
+///
+/// | Key       | Action                                     |
+/// |-----------|--------------------------------------------|
+/// | Enter     | Apply SQL filter                           |
 /// | Esc       | Dismiss autocomplete, or cancel             |
 /// | Tab       | Accept autocomplete suggestion              |
 /// | Up/Down   | Navigate autocomplete suggestions           |
 /// | Backspace | Delete last character                       |
 /// | $         | Start column reference (triggers autocomplete) |
 /// | Any char  | Append to input                             |
-///
-/// ## Auto-Detection
-///
-/// The query bar automatically detects whether input is a SQL filter
-/// expression or a plain text search:
-///
-/// **Filter** (green badge) is detected when input contains:
-/// - `$` (column reference)
-/// - Starts with `"` (quoted identifier)
-/// - Comparison operators: `=`, `<`, `>`, `!=`, `<>`
-/// - SQL keywords: `LIKE`, `ILIKE`, `IS`, `IN`, `BETWEEN`, `AND`, `OR`, `NOT`
-///
-/// **Search** (yellow badge) is detected for all other input (plain
-/// substring match, case-insensitive).
 ///
 /// ## $ Column Shorthand
 ///
@@ -112,13 +123,15 @@
 ///
 /// # Search Highlighting
 ///
-/// When a text search is active (via `/` with plain text), any visible
-/// cell whose text contains the search term (case-insensitive) is
-/// highlighted with yellow foreground on black background. Use `n` to
-/// jump to the next matching cell and `N` for the previous one. Press
-/// `Esc` in Normal mode to clear the search.
+/// When a text search is active (via `/`), any visible cell whose text
+/// contains the search term (case-insensitive) is highlighted with
+/// yellow foreground on black background. Regex searches (via `$`) use
+/// the compiled regex for highlighting. Use `n` to jump to the next
+/// matching cell and `N` for the previous one. `n`/`N` search the full
+/// dataset via DuckDB and scroll to matching rows anywhere in the data.
+/// Press `Esc` in Normal mode to clear the search.
 ///
 /// `n`/`N` always navigate search matches regardless of filter state.
 /// Use `j`/`k` or arrow keys to navigate rows when a filter is active.
 #[allow(dead_code)]
-pub const KEYBINDINGS_VERSION: u8 = 8;
+pub const KEYBINDINGS_VERSION: u8 = 10;

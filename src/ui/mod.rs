@@ -11,7 +11,6 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
-use crate::state::is_filter_expression;
 
 use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
@@ -31,7 +30,10 @@ impl<'a> AppView<'a> {
 
 impl Widget for AppView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let show_filter = matches!(self.app.mode, AppMode::Filter);
+        let show_input_bar = matches!(
+            self.app.mode,
+            AppMode::Filter | AppMode::Search | AppMode::Regex
+        );
         let show_sql = matches!(self.app.mode, AppMode::Sql);
         let show_stats = matches!(self.app.mode, AppMode::Stats);
 
@@ -49,17 +51,19 @@ impl Widget for AppView<'_> {
             }
             SqlPad::new(self.app).render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
-        } else if show_filter {
+        } else if show_input_bar {
             TableView::new(self.app).render(chunks[0], buf);
-            let (prompt, color) = if is_filter_expression(&self.app.filter.input) {
-                ("Filter: ", Color::Green)
-            } else {
-                ("Search: ", Color::Yellow)
+            let (prompt, color) = match self.app.mode {
+                AppMode::Regex => ("Regex:  ", Color::Magenta),
+                AppMode::Filter => ("Filter: ", Color::Green),
+                _ => ("Search: ", Color::Yellow),
             };
             InputBar::new(prompt, color, &self.app.filter.input)
                 .render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
-            render_autocomplete_popup(self.app, chunks[1].y, area, buf);
+            if self.app.mode == AppMode::Filter {
+                render_autocomplete_popup(self.app, chunks[1].y, area, buf);
+            }
         } else {
             TableView::new(self.app).render(chunks[0], buf);
             StatusBar::new(self.app).render(chunks[1], buf);

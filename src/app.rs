@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, Event};
+use duckdb::arrow::array::Array;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::DefaultTerminal;
@@ -12,7 +13,7 @@ use ratatui::DefaultTerminal;
 use crate::event::{Action, DataEvent, TermEvent};
 use crate::ui::sql_pad::SQL_PAD_HEIGHT;
 use crate::state::{
-    DataState, FilterState, SearchState, SqlState, StatsState, Viewport,
+    DataState, FilterState, SearchMode, SearchState, SqlState, StatsState, Viewport,
 };
 use crate::ui::AppView;
 use crate::worker::Worker;
@@ -22,6 +23,8 @@ const BUFFER_MULTIPLIER: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
     Normal,
+    Search,
+    Regex,
     Filter,
     Sql,
     Stats,
@@ -32,6 +35,8 @@ impl AppMode {
     pub fn badge(&self) -> &'static str {
         match self {
             AppMode::Normal => " NORMAL ",
+            AppMode::Search => " SEARCH ",
+            AppMode::Regex => " REGEX ",
             AppMode::Filter => " FILTER ",
             AppMode::Sql => " SQL ",
             AppMode::Stats => " STATS ",
@@ -43,6 +48,14 @@ impl AppMode {
         match self {
             AppMode::Normal => Style::default()
                 .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            AppMode::Search => Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            AppMode::Regex => Style::default()
+                .bg(Color::Magenta)
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
             AppMode::Filter => Style::default()
@@ -69,12 +82,14 @@ impl AppMode {
             AppMode::Normal => &[
                 ("Tab", "mode"),
                 ("q", "quit"),
-                ("/", "query"),
-                ("f", "col-filter"),
+                ("/", "search"),
+                ("$", "regex"),
+                ("f", "filter"),
                 ("s", "sort"),
                 ("S", "stats"),
                 ("e", "sql"),
             ],
+            AppMode::Search | AppMode::Regex => &[("Enter", "apply"), ("Esc", "cancel")],
             AppMode::Filter => &[
                 ("Enter", "apply"),
                 ("Esc", "cancel"),
@@ -107,7 +122,7 @@ impl AppMode {
                 Constraint::Length(SQL_PAD_HEIGHT),
                 Constraint::Length(1),
             ],
-            AppMode::Filter => vec![
+            AppMode::Search | AppMode::Regex | AppMode::Filter => vec![
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -118,7 +133,7 @@ impl AppMode {
 
     pub fn cursor_position(&self, app: &App, area_height: u16) -> Option<(u16, u16)> {
         match self {
-            AppMode::Filter => {
+            AppMode::Search | AppMode::Regex | AppMode::Filter => {
                 let filter_y = area_height - 2;
                 let cursor_x = 8 + app.filter.input.len() as u16;
                 Some((cursor_x, filter_y))
@@ -144,6 +159,8 @@ pub struct App {
     pub stats: StatsState,
     pub status_message: Option<String>,
     pub fetch_pending: bool,
+    pub search_pending: bool,
+    pub pending_search_col_find: Option<(usize, String, bool)>,
     action_tx: Sender<Action>,
     data_rx: Receiver<DataEvent>,
     term_rx: Receiver<TermEvent>,
@@ -177,6 +194,8 @@ impl App {
             stats: StatsState::new(),
             status_message: Some("Loading...".to_string()),
             fetch_pending: false,
+            search_pending: false,
+            pending_search_col_find: None,
             action_tx,
             data_rx,
             term_rx,
@@ -354,10 +373,38 @@ impl App {
                     self.data.current_batch = Some(batch);
                     self.data.total_rows = total_rows;
                     self.fetch_pending = false;
+                    self.try_resolve_search_column();
+                }
+                DataEvent::MatchFound { row, match_index } => {
+                    self.search_pending = false;
+                    self.search.match_index = match_index;
+                    self.viewport.selected_row = row;
+                    self.viewport.adjust_view();
+
+                    // Store pending column find to resolve once buffer is loaded
+                    if let Some(ref term) = self.search.active_search {
+                        let is_regex = self.search.search_mode == SearchMode::Regex;
+                        self.pending_search_col_find =
+                            Some((row, term.clone(), is_regex));
+                    }
+
+                    self.ensure_buffer();
+                    // Try immediate resolve if buffer already contains the row
+                    self.try_resolve_search_column();
+                    self.status_message = Some(format!("Match at row {}", row + 1));
+                }
+                DataEvent::MatchNotFound => {
+                    self.search_pending = false;
+                    self.status_message = Some("No match found".to_string());
+                }
+                DataEvent::MatchCount { count } => {
+                    self.search.match_count = Some(count);
                 }
                 DataEvent::SortApplied => {
                     self.status_message = None;
                     self.fetch_pending = false;
+                    self.search_pending = false;
+                    self.pending_search_col_find = None;
                 }
                 DataEvent::FilterApplied { total_rows } => {
                     self.data.total_rows = total_rows;
@@ -368,6 +415,8 @@ impl App {
                     self.status_message =
                         Some(format!("Filter applied: {total_rows} rows match"));
                     self.fetch_pending = false;
+                    self.search_pending = false;
+                    self.pending_search_col_find = None;
                 }
                 DataEvent::FilterReset { total_rows } => {
                     self.data.total_rows = total_rows;
@@ -377,6 +426,8 @@ impl App {
                     self.filter.active_filter = None;
                     self.status_message = Some("Filter cleared".to_string());
                     self.fetch_pending = false;
+                    self.search_pending = false;
+                    self.pending_search_col_find = None;
                 }
                 DataEvent::SqlResult {
                     batch,
@@ -472,6 +523,83 @@ impl App {
             offset: new_offset,
             limit: fetch_size,
         });
+    }
+
+    fn try_resolve_search_column(&mut self) {
+        let (target_row, term, is_regex) = match self.pending_search_col_find.as_ref() {
+            Some(v) => v.clone(),
+            None => return,
+        };
+
+        let batch = match self.data.current_batch.as_ref() {
+            Some(b) => b,
+            None => return,
+        };
+        let schema = match self.data.schema.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Check if target row is in the current buffer
+        if target_row < self.data.buffer_offset
+            || target_row >= self.data.buffer_offset + batch.num_rows()
+        {
+            return;
+        }
+
+        let batch_row = target_row - self.data.buffer_offset;
+        let term_lower = term.to_lowercase();
+        let re = if is_regex {
+            regex::RegexBuilder::new(&term)
+                .case_insensitive(true)
+                .build()
+                .ok()
+        } else {
+            None
+        };
+
+        let formatters: Vec<Option<duckdb::arrow::util::display::ArrayFormatter>> =
+            (0..batch.num_columns())
+                .map(|i| {
+                    duckdb::arrow::util::display::ArrayFormatter::try_new(
+                        batch.column(i).as_ref(),
+                        &Default::default(),
+                    )
+                    .ok()
+                })
+                .collect();
+
+        let mut found_col: Option<usize> = None;
+        for (col_idx, _field) in schema.fields().iter().enumerate() {
+            if col_idx >= formatters.len() {
+                continue;
+            }
+            let column = batch.column(col_idx);
+            if column.is_null(batch_row) {
+                continue;
+            }
+            if let Some(ref fmt) = formatters[col_idx] {
+                let val = fmt.value(batch_row).to_string();
+                let matches = if is_regex {
+                    re.as_ref().map_or(false, |r| r.is_match(&val))
+                } else {
+                    val.to_lowercase().contains(&term_lower)
+                };
+                if matches {
+                    found_col = Some(col_idx);
+                    break;
+                }
+            }
+        }
+
+        // Drop borrows before mutable operations
+        drop(formatters);
+        self.pending_search_col_find = None;
+
+        if let Some(col_idx) = found_col {
+            self.viewport.selected_col = col_idx;
+            self.adjust_column_view();
+        }
     }
 
     pub(crate) fn cycle_sort(&mut self) {
