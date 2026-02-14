@@ -11,8 +11,7 @@ use crate::event::SortState;
 use crate::state::{SearchMode, SelectionMode};
 use crate::ui::table_render::{build_formatters, compute_column_widths, truncate_to_width, visible_columns};
 
-/// Convert a 1-based position to a subscript digit character (₁₂₃…₉).
-/// Falls back to regular digits for values > 9.
+/// Convert a 1-based position to a subscript digit character.
 pub(crate) fn subscript_digit(n: usize) -> char {
     const SUBSCRIPTS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
     if n < SUBSCRIPTS.len() {
@@ -242,8 +241,9 @@ enum SearchMatcher {
 
 impl SearchMatcher {
     fn from_search_state(app: &App) -> Option<Self> {
-        let term = app.search.active_search.as_ref()?;
-        match app.search.search_mode {
+        let tab = app.tab();
+        let term = tab.search.active_search.as_ref()?;
+        match tab.search.search_mode {
             SearchMode::Regex => {
                 let re = regex::RegexBuilder::new(term)
                     .case_insensitive(true)
@@ -275,11 +275,12 @@ impl<'a> TableView<'a> {
 
 impl Widget for TableView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let schema = match self.app.data.schema.as_ref() {
+        let tab = self.app.tab();
+        let schema = match tab.data.schema.as_ref() {
             Some(s) => s,
             None => return,
         };
-        let batch = match self.app.data.current_batch.as_ref() {
+        let batch = match tab.data.current_batch.as_ref() {
             Some(b) => b,
             None => return,
         };
@@ -296,8 +297,8 @@ impl Widget for TableView<'_> {
 
         let formatters = build_formatters(batch);
 
-        let multi = self.app.data.sort_state.specs().len() > 1;
-        let sort_state = &self.app.data.sort_state;
+        let multi = tab.data.sort_state.specs().len() > 1;
+        let sort_state = &tab.data.sort_state;
 
         let (headers, col_widths) = compute_column_widths(
             schema,
@@ -315,7 +316,7 @@ impl Widget for TableView<'_> {
         let visible_cols = visible_columns(
             &col_widths,
             area.width as usize,
-            self.app.viewport.column_offset,
+            tab.viewport.column_offset,
             row_prefix_width,
         );
 
@@ -323,8 +324,8 @@ impl Widget for TableView<'_> {
             return;
         }
 
-        let col_select_active = self.app.viewport.selection_mode == SelectionMode::Column;
-        let selected_col = self.app.viewport.selected_col;
+        let col_select_active = tab.viewport.selection_mode == SelectionMode::Column;
+        let selected_col = tab.viewport.selected_col;
 
         let header_style = Style::default()
             .fg(Color::Cyan)
@@ -379,7 +380,7 @@ impl Widget for TableView<'_> {
                 cx += 1;
 
                 let sort_indicator =
-                    sort_indicator_string(&self.app.data.sort_state, field.name(), multi);
+                    sort_indicator_string(&tab.data.sort_state, field.name(), multi);
                 if !sort_indicator.is_empty() {
                     buf.set_string(cx, header_y, &sort_indicator, col_header_style);
                     cx += sort_indicator.width() as u16;
@@ -403,8 +404,7 @@ impl Widget for TableView<'_> {
             x += col_widths[col_idx] + 2;
         }
 
-        let simple_filter = self
-            .app
+        let simple_filter = tab
             .filter
             .active_filter
             .as_ref()
@@ -440,7 +440,7 @@ impl Widget for TableView<'_> {
             }
 
             let is_selected_row =
-                display_row == self.app.viewport.selected_row_in_view();
+                display_row == tab.viewport.selected_row_in_view();
             let show_row_highlight = is_selected_row && !col_select_active;
             let row_style = if show_row_highlight {
                 Style::default().bg(Color::DarkGray)

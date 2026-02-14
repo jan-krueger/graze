@@ -15,9 +15,10 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // Toggle selection mode
         KeyCode::Tab => {
-            app.viewport.selection_mode = match app.viewport.selection_mode {
+            let tab = app.tab_mut();
+            tab.viewport.selection_mode = match tab.viewport.selection_mode {
                 SelectionMode::Row => {
-                    app.viewport.selected_col = app.viewport.column_offset;
+                    tab.viewport.selected_col = tab.viewport.column_offset;
                     SelectionMode::Column
                 }
                 SelectionMode::Column => SelectionMode::Row,
@@ -28,52 +29,54 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('j') | KeyCode::Down => app.move_down(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_up(1),
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.move_down(app.viewport.page_size / 2);
+            let half = app.tab().viewport.page_size / 2;
+            app.move_down(half);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.move_up(app.viewport.page_size / 2);
+            let half = app.tab().viewport.page_size / 2;
+            app.move_up(half);
         }
         KeyCode::Char('g') => {
-            app.viewport.selected_row = 0;
-            app.viewport.adjust_view();
+            app.tab_mut().viewport.selected_row = 0;
+            app.tab_mut().viewport.adjust_view();
             app.ensure_buffer();
         }
         KeyCode::Char('G') => {
-            if app.data.total_rows > 0 {
-                app.viewport.selected_row = app.data.total_rows - 1;
-                app.viewport.adjust_view();
+            if app.tab().data.total_rows > 0 {
+                app.tab_mut().viewport.selected_row = app.tab().data.total_rows - 1;
+                app.tab_mut().viewport.adjust_view();
                 app.ensure_buffer();
             }
         }
 
         // Horizontal navigation
         KeyCode::Char('h') | KeyCode::Left => {
-            match app.viewport.selection_mode {
+            match app.tab().viewport.selection_mode {
                 SelectionMode::Row => {
-                    if app.viewport.column_offset > 0 {
-                        app.viewport.column_offset -= 1;
+                    if app.tab().viewport.column_offset > 0 {
+                        app.tab_mut().viewport.column_offset -= 1;
                     }
                 }
                 SelectionMode::Column => {
-                    if app.viewport.selected_col > 0 {
-                        app.viewport.selected_col -= 1;
+                    if app.tab().viewport.selected_col > 0 {
+                        app.tab_mut().viewport.selected_col -= 1;
                         app.adjust_column_view();
                     }
                 }
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
-            if let Some(ref schema) = app.data.schema {
+            if let Some(ref schema) = app.tab().data.schema {
                 let max_col = schema.fields().len().saturating_sub(1);
-                match app.viewport.selection_mode {
+                match app.tab().viewport.selection_mode {
                     SelectionMode::Row => {
-                        if app.viewport.column_offset < max_col {
-                            app.viewport.column_offset += 1;
+                        if app.tab().viewport.column_offset < max_col {
+                            app.tab_mut().viewport.column_offset += 1;
                         }
                     }
                     SelectionMode::Column => {
-                        if app.viewport.selected_col < max_col {
-                            app.viewport.selected_col += 1;
+                        if app.tab().viewport.selected_col < max_col {
+                            app.tab_mut().viewport.selected_col += 1;
                             app.adjust_column_view();
                         }
                     }
@@ -81,18 +84,18 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('0') => {
-            match app.viewport.selection_mode {
+            match app.tab().viewport.selection_mode {
                 SelectionMode::Row => {
-                    app.viewport.column_offset = 0;
+                    app.tab_mut().viewport.column_offset = 0;
                 }
                 SelectionMode::Column => {
-                    app.viewport.selected_col = 0;
+                    app.tab_mut().viewport.selected_col = 0;
                     app.adjust_column_view();
                 }
             }
         }
         KeyCode::Char('$') => {
-            app.filter.input.clear();
+            app.tab_mut().filter.input.clear();
             app.mode = AppMode::Regex;
         }
 
@@ -107,6 +110,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             app.stats.schema = None;
             app.stats.scroll_offset = 0;
             let table = app
+                .tab()
                 .data
                 .table_name
                 .as_deref()
@@ -118,34 +122,35 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // Search / Filter
         KeyCode::Char('/') => {
-            app.filter.input.clear();
+            app.tab_mut().filter.input.clear();
             app.mode = AppMode::Search;
         }
         KeyCode::Char('f') => {
             // Column-specific filter shortcut: pre-fill with current column name
-            if let Some(ref schema) = app.data.schema {
+            if let Some(ref schema) = app.tab().data.schema {
                 let fields = schema.fields();
                 if !fields.is_empty() {
-                    let col_idx = app.viewport.selected_col.min(fields.len() - 1);
-                    let col_name = fields[col_idx].name();
-                    app.filter.input = format!("\"{}\" = ", col_name);
+                    let col_idx = app.tab().viewport.selected_col.min(fields.len() - 1);
+                    let col_name = fields[col_idx].name().clone();
+                    app.tab_mut().filter.input = format!("\"{}\" = ", col_name);
                     app.mode = AppMode::Filter;
                 }
             }
         }
         KeyCode::Esc => {
-            let had_search = app.search.active_search.is_some();
-            let had_filter = app.filter.active_filter.is_some();
+            let had_search = app.tab().search.active_search.is_some();
+            let had_filter = app.tab().filter.active_filter.is_some();
 
             // Clear both at once
             if had_search {
-                app.search.active_search = None;
-                app.search.match_count = None;
-                app.search.match_index = None;
+                let tab = app.tab_mut();
+                tab.search.active_search = None;
+                tab.search.match_count = None;
+                tab.search.match_index = None;
             }
             if had_filter {
                 app.send_action(Action::ResetFilter);
-                app.filter.input.clear();
+                app.tab_mut().filter.input.clear();
             }
 
             if had_search && !had_filter {
@@ -162,13 +167,25 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // Search navigation (n/N always navigate search matches)
         KeyCode::Char('n') => {
-            if app.search.active_search.is_some() {
+            if app.tab().search.active_search.is_some() {
                 super::search::jump_to_next_match(app);
             }
         }
         KeyCode::Char('N') => {
-            if app.search.active_search.is_some() {
+            if app.tab().search.active_search.is_some() {
                 super::search::jump_to_prev_match(app);
+            }
+        }
+
+        // Tab switching
+        KeyCode::Char(']') => {
+            if app.has_tabs() {
+                app.switch_tab(1);
+            }
+        }
+        KeyCode::Char('[') => {
+            if app.has_tabs() {
+                app.switch_tab(-1);
             }
         }
 

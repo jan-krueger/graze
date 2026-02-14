@@ -18,6 +18,7 @@ impl<'a> StatusBar<'a> {
 
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let tab = self.app.tab();
         let bg_style = Style::default().bg(Color::DarkGray).fg(Color::White);
 
         buf.set_string(
@@ -36,11 +37,11 @@ impl Widget for StatusBar<'_> {
 
         // Selection mode indicator (only in Normal mode)
         if self.app.mode == AppMode::Normal {
-            let sel_str = match self.app.viewport.selection_mode {
+            let sel_str = match tab.viewport.selection_mode {
                 SelectionMode::Row => " ROW ",
                 SelectionMode::Column => " COL ",
             };
-            let sel_style = match self.app.viewport.selection_mode {
+            let sel_style = match tab.viewport.selection_mode {
                 SelectionMode::Row => Style::default()
                     .bg(Color::DarkGray)
                     .fg(Color::White)
@@ -55,23 +56,23 @@ impl Widget for StatusBar<'_> {
         }
 
         // File name
-        if let Some(ref name) = self.app.data.file_name {
+        if let Some(ref name) = tab.data.file_name {
             let file_str = format!(" {} ", name);
             buf.set_string(x, area.y, &file_str, bg_style);
             x += file_str.len() as u16;
         }
 
         // Position info
-        if self.app.data.total_rows > 0 {
+        if tab.data.total_rows > 0 {
             let pos = self.app.absolute_row() + 1;
-            let total = self.app.data.total_rows;
+            let total = tab.data.total_rows;
             let pos_str = format!(" {pos}/{total} ");
             buf.set_string(x, area.y, &pos_str, bg_style);
             x += pos_str.len() as u16;
         }
 
         // Active filter indicator
-        if let Some(ref filter) = self.app.filter.active_filter {
+        if let Some(ref filter) = tab.filter.active_filter {
             let filter_str = format!(" [Filter: {}] ", filter);
             let filter_style = bg_style.fg(Color::Green);
             buf.set_string(x, area.y, &filter_str, filter_style);
@@ -79,12 +80,12 @@ impl Widget for StatusBar<'_> {
         }
 
         // Active search indicator
-        if let Some(ref search) = self.app.search.active_search {
-            let (label, color) = match self.app.search.search_mode {
+        if let Some(ref search) = tab.search.active_search {
+            let (label, color) = match tab.search.search_mode {
                 SearchMode::Regex => ("Regex", Color::Magenta),
                 SearchMode::Plain => ("Search", Color::Yellow),
             };
-            let search_str = match (self.app.search.match_index, self.app.search.match_count) {
+            let search_str = match (tab.search.match_index, tab.search.match_count) {
                 (Some(idx), Some(total)) => {
                     format!(" [{}: {} ({}/{} matches)] ", label, search, idx, total)
                 }

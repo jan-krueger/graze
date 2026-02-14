@@ -8,20 +8,25 @@ use graze::app::App;
 #[derive(Parser)]
 #[command(name = "graze", about = "TUI for exploring tabular data files")]
 struct Cli {
-    /// Path to a data file (CSV, Parquet, JSON)
-    file: PathBuf,
+    /// Paths to data files (CSV, Parquet, JSON)
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let path = cli
-        .file
-        .canonicalize()
-        .with_context(|| format!("File not found: {}", cli.file.display()))?;
+    let paths: Vec<PathBuf> = cli
+        .files
+        .iter()
+        .map(|f| {
+            f.canonicalize()
+                .with_context(|| format!("File not found: {}", f.display()))
+        })
+        .collect::<Result<_>>()?;
 
     let terminal = ratatui::init();
-    let mut app = App::new(path)?;
+    let mut app = App::new(paths)?;
     let result = app.run(terminal);
     ratatui::restore();
     result

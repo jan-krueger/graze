@@ -24,6 +24,8 @@
 /// | Esc       | Clear filter and search                     |
 /// | n         | Jump to next search match (full dataset)     |
 /// | N         | Jump to previous search match (full dataset) |
+/// | ]         | Switch to next tab                           |
+/// | [         | Switch to previous tab                       |
 ///
 /// # Search Mode (`/`)
 ///
@@ -134,4 +136,4 @@
 /// `n`/`N` always navigate search matches regardless of filter state.
 /// Use `j`/`k` or arrow keys to navigate rows when a filter is active.
 #[allow(dead_code)]
-pub const KEYBINDINGS_VERSION: u8 = 10;
+pub const KEYBINDINGS_VERSION: u8 = 11;

@@ -144,6 +144,31 @@ impl SearchState {
     }
 }
 
+/// Per-tab state: everything that is independent per file.
+pub struct TabState {
+    pub viewport: Viewport,
+    pub data: DataState,
+    pub filter: FilterState,
+    pub search: SearchState,
+    pub fetch_pending: bool,
+    pub search_pending: bool,
+    pub pending_search_col_find: Option<(usize, String, bool)>,
+}
+
+impl TabState {
+    pub fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+            data: DataState::new(),
+            filter: FilterState::new(),
+            search: SearchState::new(),
+            fetch_pending: false,
+            search_pending: false,
+            pending_search_col_find: None,
+        }
+    }
+}
+
 /// SQL scratchpad state: editor lines, cursor, results.
 pub struct SqlState {
     pub lines: Vec<String>,

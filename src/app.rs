@@ -13,7 +13,7 @@ use ratatui::DefaultTerminal;
 use crate::event::{Action, DataEvent, TermEvent};
 use crate::ui::sql_pad::SQL_PAD_HEIGHT;
 use crate::state::{
-    DataState, FilterState, SearchMode, SearchState, SqlState, StatsState, Viewport,
+    SearchMode, SqlState, StatsState, TabState,
 };
 use crate::ui::AppView;
 use crate::worker::Worker;
@@ -135,7 +135,7 @@ impl AppMode {
         match self {
             AppMode::Search | AppMode::Regex | AppMode::Filter => {
                 let filter_y = area_height - 2;
-                let cursor_x = 8 + app.filter.input.len() as u16;
+                let cursor_x = 8 + app.tab().filter.input.len() as u16;
                 Some((cursor_x, filter_y))
             }
             AppMode::Sql => {
@@ -151,90 +151,105 @@ impl AppMode {
 
 pub struct App {
     pub mode: AppMode,
-    pub viewport: Viewport,
-    pub data: DataState,
-    pub filter: FilterState,
-    pub search: SearchState,
+    pub tabs: Vec<TabState>,
+    pub active_tab: usize,
     pub sql: SqlState,
     pub stats: StatsState,
     pub status_message: Option<String>,
-    pub fetch_pending: bool,
-    pub search_pending: bool,
-    pub pending_search_col_find: Option<(usize, String, bool)>,
-    action_tx: Sender<Action>,
-    data_rx: Receiver<DataEvent>,
+    action_txs: Vec<Sender<Action>>,
+    data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
 }
 
 impl App {
-    pub fn new(file_path: PathBuf) -> Result<Self> {
-        let (action_tx, action_rx) = mpsc::channel::<Action>();
-        let (data_tx, data_rx) = mpsc::channel::<DataEvent>();
+    pub fn new(file_paths: Vec<PathBuf>) -> Result<Self> {
         let (term_tx, term_rx) = mpsc::channel::<TermEvent>();
-
-        // Spawn worker thread
-        let worker = Worker::new(action_rx, data_tx);
-        thread::spawn(move || worker.run());
 
         // Spawn event thread
         thread::spawn(move || {
             event_thread(term_tx);
         });
 
-        // Send initial load
-        action_tx.send(Action::LoadFile(file_path))?;
+        let mut tabs = Vec::with_capacity(file_paths.len());
+        let mut action_txs = Vec::with_capacity(file_paths.len());
+        let mut data_rxs = Vec::with_capacity(file_paths.len());
+
+        for file_path in file_paths {
+            let (action_tx, action_rx) = mpsc::channel::<Action>();
+            let (data_tx, data_rx) = mpsc::channel::<DataEvent>();
+
+            let worker = Worker::new(action_rx, data_tx);
+            thread::spawn(move || worker.run());
+
+            action_tx.send(Action::LoadFile(file_path))?;
+
+            tabs.push(TabState::new());
+            action_txs.push(action_tx);
+            data_rxs.push(data_rx);
+        }
 
         Ok(Self {
             mode: AppMode::Normal,
-            viewport: Viewport::new(),
-            data: DataState::new(),
-            filter: FilterState::new(),
-            search: SearchState::new(),
+            tabs,
+            active_tab: 0,
             sql: SqlState::new(),
             stats: StatsState::new(),
             status_message: Some("Loading...".to_string()),
-            fetch_pending: false,
-            search_pending: false,
-            pending_search_col_find: None,
-            action_tx,
-            data_rx,
+            action_txs,
+            data_rxs,
             term_rx,
         })
     }
 
+    /// Get a reference to the active tab.
+    pub fn tab(&self) -> &TabState {
+        &self.tabs[self.active_tab]
+    }
+
+    /// Get a mutable reference to the active tab.
+    pub fn tab_mut(&mut self) -> &mut TabState {
+        &mut self.tabs[self.active_tab]
+    }
+
+    /// Whether multiple tabs are open (controls tab bar visibility).
+    pub fn has_tabs(&self) -> bool {
+        self.tabs.len() > 1
+    }
+
     /// Offset into the buffer batch that corresponds to view_start.
     pub fn view_offset_in_buffer(&self) -> usize {
-        self.viewport
+        self.tab()
+            .viewport
             .view_start
-            .saturating_sub(self.data.buffer_offset)
+            .saturating_sub(self.tab().data.buffer_offset)
     }
 
     /// How many rows from the buffer are available for the current view.
     pub fn visible_row_count(&self) -> usize {
-        if let Some(ref batch) = self.data.current_batch {
+        if let Some(ref batch) = self.tab().data.current_batch {
             let view_off = self.view_offset_in_buffer();
             let available = batch.num_rows().saturating_sub(view_off);
-            available.min(self.viewport.page_size)
+            available.min(self.tab().viewport.page_size)
         } else {
             0
         }
     }
 
     pub fn absolute_row(&self) -> usize {
-        self.viewport.selected_row
+        self.tab().viewport.selected_row
     }
 
     /// Compute how many columns are visible at the current terminal width and column offset.
-    /// Uses the same column-width logic as the renderer for exact parity.
     pub fn visible_col_count(&self) -> usize {
         use crate::ui::table::subscript_digit;
         use crate::ui::table_render::{build_formatters, compute_column_widths, visible_columns};
 
-        let schema = match self.data.schema.as_ref() {
+        let tab = self.tab();
+        let schema = match tab.data.schema.as_ref() {
             Some(s) => s,
             None => return 1,
         };
-        let batch = match self.data.current_batch.as_ref() {
+        let batch = match tab.data.current_batch.as_ref() {
             Some(b) => b,
             None => return 1,
         };
@@ -244,8 +259,8 @@ impl App {
         }
 
         let formatters = build_formatters(batch);
-        let multi = self.data.sort_state.specs().len() > 1;
-        let sort_state = &self.data.sort_state;
+        let multi = tab.data.sort_state.specs().len() > 1;
+        let sort_state = &tab.data.sort_state;
 
         let view_off = self.view_offset_in_buffer();
         let visible_count = self.visible_row_count();
@@ -276,8 +291,8 @@ impl App {
         let row_prefix_width = 3;
         let cols = visible_columns(
             &col_widths,
-            self.viewport.terminal_width as usize,
-            self.viewport.column_offset,
+            tab.viewport.terminal_width as usize,
+            tab.viewport.column_offset,
             row_prefix_width,
         );
 
@@ -287,45 +302,78 @@ impl App {
     /// Convenience: adjust column view using computed visible col count.
     pub(crate) fn adjust_column_view(&mut self) {
         let visible = self.visible_col_count();
-        self.viewport.adjust_column_view_with(visible);
+        self.tab_mut().viewport.adjust_column_view_with(visible);
     }
 
     fn buffer_end(&self) -> usize {
-        self.data.buffer_offset
-            + self
+        let tab = self.tab();
+        tab.data.buffer_offset
+            + tab
                 .data
                 .current_batch
                 .as_ref()
                 .map_or(0, |b| b.num_rows())
     }
 
-    fn fetch_size(&self) -> usize {
-        self.viewport.page_size * BUFFER_MULTIPLIER
+    fn fetch_size_for(&self, tab_idx: usize) -> usize {
+        self.tabs[tab_idx].viewport.page_size * BUFFER_MULTIPLIER
     }
 
-    /// Send an action to the worker thread.
+    /// Send an action to the active tab's worker thread.
     pub(crate) fn send_action(&self, action: Action) {
-        let _ = self.action_tx.send(action);
+        let _ = self.action_txs[self.active_tab].send(action);
+    }
+
+    /// Switch to another tab with wrapping.
+    pub fn switch_tab(&mut self, delta: isize) {
+        let len = self.tabs.len();
+        self.active_tab =
+            ((self.active_tab as isize + delta).rem_euclid(len as isize)) as usize;
+        self.on_tab_switch();
+    }
+
+    fn on_tab_switch(&mut self) {
+        self.status_message = None;
+        self.sql.result = None;
+        self.sql.result_schema = None;
+        self.sql.error = None;
+        self.stats.batch = None;
+        self.stats.schema = None;
+        if matches!(self.mode, AppMode::Stats | AppMode::Sql) {
+            self.mode = AppMode::Normal;
+        }
+        let row = self.tabs[self.active_tab].viewport.selected_row;
+        self.request_buffer_around(row);
+    }
+
+    fn update_terminal_size(&mut self, width: u16, height: u16) {
+        let chrome = if self.has_tabs() { 3 } else { 2 }; // +1 for tab bar
+        let page_size = (height as usize).saturating_sub(chrome).max(1);
+        for tab in &mut self.tabs {
+            tab.viewport.page_size = page_size;
+            tab.viewport.terminal_width = width;
+        }
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let size = terminal.size()?;
-        // header row (1) + status bar (1) = 2 lines of chrome
-        self.viewport.page_size = (size.height as usize).saturating_sub(2).max(1);
-        self.viewport.terminal_width = size.width;
+        self.update_terminal_size(size.width, size.height);
 
         loop {
             terminal.draw(|frame| {
                 let area = frame.area();
                 frame.render_widget(AppView::new(self), area);
 
-                if let Some(pos) = self.mode.cursor_position(self, area.height) {
-                    frame.set_cursor_position(pos);
+                if let Some((cx, cy)) = self.mode.cursor_position(self, area.height) {
+                    let offset_y = if self.has_tabs() { 1u16 } else { 0 };
+                    frame.set_cursor_position((cx, cy + offset_y));
                 }
             })?;
 
             if self.mode == AppMode::Quitting {
-                let _ = self.action_tx.send(Action::Quit);
+                for tx in &self.action_txs {
+                    let _ = tx.send(Action::Quit);
+                }
                 break;
             }
 
@@ -336,9 +384,9 @@ impl App {
                     crate::handlers::handle_key(self, key_event);
                 }
                 Ok(TermEvent::Resize(w, h)) => {
-                    self.viewport.page_size = (h as usize).saturating_sub(2).max(1);
-                    self.viewport.terminal_width = w;
-                    self.request_buffer_around(self.viewport.selected_row);
+                    self.update_terminal_size(w, h);
+                    let row = self.tab().viewport.selected_row;
+                    self.request_buffer_around(row);
                 }
                 Ok(TermEvent::Tick) | Err(_) => {}
             }
@@ -348,92 +396,119 @@ impl App {
     }
 
     fn process_data_events(&mut self) {
-        while let Ok(event) = self.data_rx.try_recv() {
-            match event {
-                DataEvent::FileLoaded {
-                    schema,
-                    total_rows,
-                    file_name,
-                    table_name,
-                } => {
-                    self.data.schema = Some(schema);
-                    self.data.total_rows = total_rows;
-                    self.data.file_name = Some(file_name);
-                    self.data.table_name = Some(table_name);
+        for tab_idx in 0..self.data_rxs.len() {
+            while let Ok(event) = self.data_rxs[tab_idx].try_recv() {
+                self.apply_data_event(tab_idx, event);
+            }
+        }
+    }
+
+    fn apply_data_event(&mut self, tab_idx: usize, event: DataEvent) {
+        let is_active = tab_idx == self.active_tab;
+        match event {
+            DataEvent::FileLoaded {
+                schema,
+                total_rows,
+                file_name,
+                table_name,
+            } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.data.schema = Some(schema);
+                tab.data.total_rows = total_rows;
+                tab.data.file_name = Some(file_name);
+                tab.data.table_name = Some(table_name);
+                tab.fetch_pending = false;
+                if is_active {
                     self.status_message = None;
-                    self.fetch_pending = false;
-                    self.request_buffer_around(0);
                 }
-                DataEvent::PageLoaded {
-                    offset,
-                    batch,
-                    total_rows,
-                } => {
-                    self.data.buffer_offset = offset;
-                    self.data.current_batch = Some(batch);
-                    self.data.total_rows = total_rows;
-                    self.fetch_pending = false;
+                self.request_buffer_around_for(tab_idx, 0);
+            }
+            DataEvent::PageLoaded {
+                offset,
+                batch,
+                total_rows,
+            } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.data.buffer_offset = offset;
+                tab.data.current_batch = Some(batch);
+                tab.data.total_rows = total_rows;
+                tab.fetch_pending = false;
+                if is_active {
                     self.try_resolve_search_column();
                 }
-                DataEvent::MatchFound { row, match_index } => {
-                    self.search_pending = false;
-                    self.search.match_index = match_index;
-                    self.viewport.selected_row = row;
-                    self.viewport.adjust_view();
+            }
+            DataEvent::MatchFound { row, match_index } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.search_pending = false;
+                tab.search.match_index = match_index;
+                tab.viewport.selected_row = row;
+                tab.viewport.adjust_view();
 
-                    // Store pending column find to resolve once buffer is loaded
-                    if let Some(ref term) = self.search.active_search {
-                        let is_regex = self.search.search_mode == SearchMode::Regex;
-                        self.pending_search_col_find =
-                            Some((row, term.clone(), is_regex));
-                    }
+                if let Some(ref term) = tab.search.active_search {
+                    let is_regex = tab.search.search_mode == SearchMode::Regex;
+                    tab.pending_search_col_find =
+                        Some((row, term.clone(), is_regex));
+                }
 
+                if is_active {
                     self.ensure_buffer();
-                    // Try immediate resolve if buffer already contains the row
                     self.try_resolve_search_column();
                     self.status_message = Some(format!("Match at row {}", row + 1));
                 }
-                DataEvent::MatchNotFound => {
-                    self.search_pending = false;
+            }
+            DataEvent::MatchNotFound => {
+                self.tabs[tab_idx].search_pending = false;
+                if is_active {
                     self.status_message = Some("No match found".to_string());
                 }
-                DataEvent::MatchCount { count } => {
-                    self.search.match_count = Some(count);
-                }
-                DataEvent::SortApplied => {
+            }
+            DataEvent::MatchCount { count } => {
+                self.tabs[tab_idx].search.match_count = Some(count);
+            }
+            DataEvent::SortApplied => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.fetch_pending = false;
+                tab.search_pending = false;
+                tab.pending_search_col_find = None;
+                if is_active {
                     self.status_message = None;
-                    self.fetch_pending = false;
-                    self.search_pending = false;
-                    self.pending_search_col_find = None;
                 }
-                DataEvent::FilterApplied { total_rows } => {
-                    self.data.total_rows = total_rows;
-                    self.viewport.selected_row = 0;
-                    self.viewport.view_start = 0;
-                    self.data.buffer_offset = 0;
-                    self.filter.active_filter = Some(self.filter.input.clone());
+            }
+            DataEvent::FilterApplied { total_rows } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.data.total_rows = total_rows;
+                tab.viewport.selected_row = 0;
+                tab.viewport.view_start = 0;
+                tab.data.buffer_offset = 0;
+                tab.filter.active_filter = Some(tab.filter.input.clone());
+                tab.fetch_pending = false;
+                tab.search_pending = false;
+                tab.pending_search_col_find = None;
+                if is_active {
                     self.status_message =
                         Some(format!("Filter applied: {total_rows} rows match"));
-                    self.fetch_pending = false;
-                    self.search_pending = false;
-                    self.pending_search_col_find = None;
                 }
-                DataEvent::FilterReset { total_rows } => {
-                    self.data.total_rows = total_rows;
-                    self.viewport.selected_row = 0;
-                    self.viewport.view_start = 0;
-                    self.data.buffer_offset = 0;
-                    self.filter.active_filter = None;
+            }
+            DataEvent::FilterReset { total_rows } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.data.total_rows = total_rows;
+                tab.viewport.selected_row = 0;
+                tab.viewport.view_start = 0;
+                tab.data.buffer_offset = 0;
+                tab.filter.active_filter = None;
+                tab.fetch_pending = false;
+                tab.search_pending = false;
+                tab.pending_search_col_find = None;
+                if is_active {
                     self.status_message = Some("Filter cleared".to_string());
-                    self.fetch_pending = false;
-                    self.search_pending = false;
-                    self.pending_search_col_find = None;
                 }
-                DataEvent::SqlResult {
-                    batch,
-                    schema,
-                    ref sql,
-                } => {
+            }
+            DataEvent::SqlResult {
+                batch,
+                schema,
+                ref sql,
+            } => {
+                if is_active {
                     let is_summarize = sql
                         .trim_start()
                         .to_uppercase()
@@ -454,7 +529,9 @@ impl App {
                             Some(format!("SQL result: {num_rows} rows"));
                     }
                 }
-                DataEvent::SqlError { ref error, ref sql } => {
+            }
+            DataEvent::SqlError { ref error, ref sql } => {
+                if is_active {
                     let is_summarize = sql
                         .trim_start()
                         .to_uppercase()
@@ -473,81 +550,91 @@ impl App {
                             Some(format!("SQL error: {error}"));
                     }
                 }
-                DataEvent::Error(msg) => {
+            }
+            DataEvent::Error(msg) => {
+                self.tabs[tab_idx].fetch_pending = false;
+                if is_active {
                     self.status_message = Some(format!("Error: {msg}"));
-                    self.fetch_pending = false;
                 }
             }
         }
     }
 
     pub(crate) fn move_down(&mut self, n: usize) {
-        self.viewport.move_cursor_down(n, self.data.total_rows);
+        let total = self.tab().data.total_rows;
+        self.tab_mut().viewport.move_cursor_down(n, total);
         self.ensure_buffer();
     }
 
     pub(crate) fn move_up(&mut self, n: usize) {
-        self.viewport.move_cursor_up(n);
+        self.tab_mut().viewport.move_cursor_up(n);
         self.ensure_buffer();
     }
 
     /// Check if we need to fetch more data.
     pub(crate) fn ensure_buffer(&mut self) {
         let buf_end = self.buffer_end();
+        let tab = self.tab();
 
-        let outside_buffer = self.viewport.selected_row < self.data.buffer_offset
-            || self.viewport.selected_row >= buf_end;
+        let outside_buffer = tab.viewport.selected_row < tab.data.buffer_offset
+            || tab.viewport.selected_row >= buf_end;
 
-        if self.fetch_pending && !outside_buffer {
+        if tab.fetch_pending && !outside_buffer {
             return;
         }
 
-        let threshold = self.viewport.page_size;
+        let threshold = tab.viewport.page_size;
 
         let needs_fetch = outside_buffer
-            || (self.data.buffer_offset > 0
-                && self.viewport.selected_row < self.data.buffer_offset + threshold)
-            || (buf_end < self.data.total_rows
-                && self.viewport.selected_row + threshold >= buf_end);
+            || (tab.data.buffer_offset > 0
+                && tab.viewport.selected_row < tab.data.buffer_offset + threshold)
+            || (buf_end < tab.data.total_rows
+                && tab.viewport.selected_row + threshold >= buf_end);
 
         if needs_fetch {
-            self.request_buffer_around(self.viewport.selected_row);
+            let row = self.tab().viewport.selected_row;
+            self.request_buffer_around(row);
         }
     }
 
     pub(crate) fn request_buffer_around(&mut self, center_row: usize) {
-        let fetch_size = self.fetch_size();
+        self.request_buffer_around_for(self.active_tab, center_row);
+    }
+
+    fn request_buffer_around_for(&mut self, tab_idx: usize, center_row: usize) {
+        let fetch_size = self.fetch_size_for(tab_idx);
         let new_offset = center_row.saturating_sub(fetch_size / 2);
-        self.fetch_pending = true;
-        let _ = self.action_tx.send(Action::FetchPage {
+        self.tabs[tab_idx].fetch_pending = true;
+        let _ = self.action_txs[tab_idx].send(Action::FetchPage {
             offset: new_offset,
             limit: fetch_size,
         });
     }
 
     fn try_resolve_search_column(&mut self) {
-        let (target_row, term, is_regex) = match self.pending_search_col_find.as_ref() {
+        let tab = self.tab();
+        let (target_row, term, is_regex) = match tab.pending_search_col_find.as_ref() {
             Some(v) => v.clone(),
             None => return,
         };
 
-        let batch = match self.data.current_batch.as_ref() {
+        let batch = match tab.data.current_batch.as_ref() {
             Some(b) => b,
             None => return,
         };
-        let schema = match self.data.schema.as_ref() {
+        let schema = match tab.data.schema.as_ref() {
             Some(s) => s,
             None => return,
         };
 
         // Check if target row is in the current buffer
-        if target_row < self.data.buffer_offset
-            || target_row >= self.data.buffer_offset + batch.num_rows()
+        if target_row < tab.data.buffer_offset
+            || target_row >= tab.data.buffer_offset + batch.num_rows()
         {
             return;
         }
 
-        let batch_row = target_row - self.data.buffer_offset;
+        let batch_row = target_row - tab.data.buffer_offset;
         let term_lower = term.to_lowercase();
         let re = if is_regex {
             regex::RegexBuilder::new(&term)
@@ -594,17 +681,17 @@ impl App {
 
         // Drop borrows before mutable operations
         drop(formatters);
-        self.pending_search_col_find = None;
+        self.tab_mut().pending_search_col_find = None;
 
         if let Some(col_idx) = found_col {
-            self.viewport.selected_col = col_idx;
+            self.tab_mut().viewport.selected_col = col_idx;
             self.adjust_column_view();
         }
     }
 
     pub(crate) fn cycle_sort(&mut self) {
-        let schema = match self.data.schema.as_ref() {
-            Some(s) => s,
+        let schema = match self.tab().data.schema.as_ref() {
+            Some(s) => s.clone(),
             None => return,
         };
 
@@ -613,13 +700,13 @@ impl App {
             return;
         }
 
-        let col_idx = self.viewport.selected_col.min(fields.len() - 1);
+        let col_idx = self.tab().viewport.selected_col.min(fields.len() - 1);
         let col_name = fields[col_idx].name().clone();
 
-        self.data.sort_state.toggle(&col_name);
-        let _ = self
-            .action_tx
-            .send(Action::ApplySort(self.data.sort_state.clone()));
+        self.tab_mut().data.sort_state.toggle(&col_name);
+        let sort_state = self.tab().data.sort_state.clone();
+        let _ = self.action_txs[self.active_tab]
+            .send(Action::ApplySort(sort_state));
     }
 }
 

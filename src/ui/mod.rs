@@ -2,11 +2,12 @@ pub mod input_bar;
 pub mod sql_pad;
 pub mod stats_overlay;
 pub mod status_bar;
+pub mod tab_bar;
 pub mod table;
 pub mod table_render;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
@@ -16,6 +17,7 @@ use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
 use self::stats_overlay::StatsOverlay;
 use self::status_bar::StatusBar;
+use self::tab_bar::TabBar;
 use self::table::TableView;
 
 pub struct AppView<'a> {
@@ -30,6 +32,18 @@ impl<'a> AppView<'a> {
 
 impl Widget for AppView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // If multiple tabs, split off a tab bar row at the top
+        let (tab_area, main_area) = if self.app.has_tabs() {
+            let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            (Some(split[0]), split[1])
+        } else {
+            (None, area)
+        };
+
+        if let Some(tab_area) = tab_area {
+            TabBar::new(self.app).render(tab_area, buf);
+        }
+
         let show_input_bar = matches!(
             self.app.mode,
             AppMode::Filter | AppMode::Search | AppMode::Regex
@@ -37,7 +51,7 @@ impl Widget for AppView<'_> {
         let show_sql = matches!(self.app.mode, AppMode::Sql);
         let show_stats = matches!(self.app.mode, AppMode::Stats);
 
-        let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(area);
+        let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(main_area);
 
         if show_stats {
             TableView::new(self.app).render(chunks[0], buf);
@@ -58,11 +72,11 @@ impl Widget for AppView<'_> {
                 AppMode::Filter => ("Filter: ", Color::Green),
                 _ => ("Search: ", Color::Yellow),
             };
-            InputBar::new(prompt, color, &self.app.filter.input)
+            InputBar::new(prompt, color, &self.app.tab().filter.input)
                 .render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
             if self.app.mode == AppMode::Filter {
-                render_autocomplete_popup(self.app, chunks[1].y, area, buf);
+                render_autocomplete_popup(self.app, chunks[1].y, main_area, buf);
             }
         } else {
             TableView::new(self.app).render(chunks[0], buf);
@@ -73,15 +87,20 @@ impl Widget for AppView<'_> {
 
 /// Render the autocomplete popup above the filter bar.
 fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut Buffer) {
-    if !app.filter.autocomplete_active || app.filter.autocomplete_suggestions.is_empty() {
+    if !app.tab().filter.autocomplete_active || app.tab().filter.autocomplete_suggestions.is_empty()
+    {
         return;
     }
 
     let max_visible = 5usize;
-    let count = app.filter.autocomplete_suggestions.len();
+    let count = app.tab().filter.autocomplete_suggestions.len();
     let visible_count = count.min(max_visible);
 
-    let selected = app.filter.autocomplete_index.min(count.saturating_sub(1));
+    let selected = app
+        .tab()
+        .filter
+        .autocomplete_index
+        .min(count.saturating_sub(1));
     let scroll_start = if selected >= visible_count {
         selected - visible_count + 1
     } else {
@@ -89,6 +108,7 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     };
 
     let max_name_len = app
+        .tab()
         .filter
         .autocomplete_suggestions
         .iter()
@@ -101,7 +121,7 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
 
     let dollar_x = {
         let prompt_len = 8u16;
-        let input = &app.filter.input;
+        let input = &app.tab().filter.input;
         if let Some(pos) = input.rfind('$') {
             area.x + prompt_len + pos as u16
         } else {
@@ -118,6 +138,7 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     let selected_style = Style::default().fg(Color::White).bg(Color::DarkGray);
 
     for (i, suggestion) in app
+        .tab()
         .filter
         .autocomplete_suggestions
         .iter()

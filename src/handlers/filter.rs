@@ -7,31 +7,35 @@ use crate::state::SearchMode;
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Enter => {
-            app.filter.autocomplete_active = false;
-            if !app.filter.input.is_empty() {
+            app.tab_mut().filter.autocomplete_active = false;
+            if !app.tab().filter.input.is_empty() {
                 match app.mode {
                     AppMode::Filter => {
-                        let expanded = expand_dollar_refs(&app.filter.input);
-                        app.filter.input = expanded.clone();
+                        let expanded = expand_dollar_refs(&app.tab().filter.input);
+                        app.tab_mut().filter.input = expanded.clone();
                         app.send_action(Action::Filter(expanded));
                     }
                     AppMode::Regex => {
-                        app.search.search_mode = SearchMode::Regex;
-                        app.search.active_search = Some(app.filter.input.clone());
-                        app.search.match_count = None;
-                        app.search.match_index = None;
+                        app.tab_mut().search.search_mode = SearchMode::Regex;
+                        let input = app.tab().filter.input.clone();
+                        let tab = app.tab_mut();
+                        tab.search.active_search = Some(input.clone());
+                        tab.search.match_count = None;
+                        tab.search.match_index = None;
                         app.send_action(Action::CountMatches {
-                            term: app.filter.input.clone(),
+                            term: input,
                             is_regex: true,
                         });
                     }
                     AppMode::Search => {
-                        app.search.search_mode = SearchMode::Plain;
-                        app.search.active_search = Some(app.filter.input.clone());
-                        app.search.match_count = None;
-                        app.search.match_index = None;
+                        app.tab_mut().search.search_mode = SearchMode::Plain;
+                        let input = app.tab().filter.input.clone();
+                        let tab = app.tab_mut();
+                        tab.search.active_search = Some(input.clone());
+                        tab.search.match_count = None;
+                        tab.search.match_index = None;
                         app.send_action(Action::CountMatches {
-                            term: app.filter.input.clone(),
+                            term: input,
                             is_regex: false,
                         });
                     }
@@ -41,58 +45,62 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             app.mode = AppMode::Normal;
         }
         KeyCode::Esc => {
-            if app.filter.autocomplete_active {
-                app.filter.autocomplete_active = false;
+            if app.tab().filter.autocomplete_active {
+                app.tab_mut().filter.autocomplete_active = false;
             } else {
-                app.filter.input.clear();
+                app.tab_mut().filter.input.clear();
                 app.mode = AppMode::Normal;
             }
         }
         KeyCode::Tab => {
             if app.mode == AppMode::Filter
-                && app.filter.autocomplete_active
-                && !app.filter.autocomplete_suggestions.is_empty()
+                && app.tab().filter.autocomplete_active
+                && !app.tab().filter.autocomplete_suggestions.is_empty()
             {
                 let idx = app
+                    .tab()
                     .filter
                     .autocomplete_index
-                    .min(app.filter.autocomplete_suggestions.len() - 1);
-                let chosen = app.filter.autocomplete_suggestions[idx].clone();
+                    .min(app.tab().filter.autocomplete_suggestions.len() - 1);
+                let chosen = app.tab().filter.autocomplete_suggestions[idx].clone();
                 apply_autocomplete(app, &chosen);
-                app.filter.autocomplete_active = false;
-                app.filter.autocomplete_suggestions.clear();
+                let tab = app.tab_mut();
+                tab.filter.autocomplete_active = false;
+                tab.filter.autocomplete_suggestions.clear();
             }
         }
         KeyCode::Up => {
             if app.mode == AppMode::Filter
-                && app.filter.autocomplete_active
-                && !app.filter.autocomplete_suggestions.is_empty()
+                && app.tab().filter.autocomplete_active
+                && !app.tab().filter.autocomplete_suggestions.is_empty()
             {
-                if app.filter.autocomplete_index == 0 {
-                    app.filter.autocomplete_index =
-                        app.filter.autocomplete_suggestions.len() - 1;
+                let tab = app.tab_mut();
+                if tab.filter.autocomplete_index == 0 {
+                    tab.filter.autocomplete_index =
+                        tab.filter.autocomplete_suggestions.len() - 1;
                 } else {
-                    app.filter.autocomplete_index -= 1;
+                    tab.filter.autocomplete_index -= 1;
                 }
             }
         }
         KeyCode::Down => {
             if app.mode == AppMode::Filter
-                && app.filter.autocomplete_active
-                && !app.filter.autocomplete_suggestions.is_empty()
+                && app.tab().filter.autocomplete_active
+                && !app.tab().filter.autocomplete_suggestions.is_empty()
             {
-                app.filter.autocomplete_index = (app.filter.autocomplete_index + 1)
-                    % app.filter.autocomplete_suggestions.len();
+                let tab = app.tab_mut();
+                tab.filter.autocomplete_index = (tab.filter.autocomplete_index + 1)
+                    % tab.filter.autocomplete_suggestions.len();
             }
         }
         KeyCode::Backspace => {
-            app.filter.input.pop();
+            app.tab_mut().filter.input.pop();
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
         }
         KeyCode::Char(c) => {
-            app.filter.input.push(c);
+            app.tab_mut().filter.input.push(c);
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
@@ -102,19 +110,20 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 }
 
 fn update_autocomplete(app: &mut App) {
-    let (partial, _start) = match find_dollar_prefix(&app.filter.input) {
+    let (partial, _start) = match find_dollar_prefix(&app.tab().filter.input) {
         Some(v) => v,
         None => {
-            app.filter.autocomplete_active = false;
-            app.filter.autocomplete_suggestions.clear();
+            let tab = app.tab_mut();
+            tab.filter.autocomplete_active = false;
+            tab.filter.autocomplete_suggestions.clear();
             return;
         }
     };
 
-    let schema = match app.data.schema.as_ref() {
-        Some(s) => s,
+    let schema = match app.tab().data.schema.as_ref() {
+        Some(s) => s.clone(),
         None => {
-            app.filter.autocomplete_active = false;
+            app.tab_mut().filter.autocomplete_active = false;
             return;
         }
     };
@@ -127,35 +136,37 @@ fn update_autocomplete(app: &mut App) {
         .map(|f| f.name().clone())
         .collect();
 
+    let tab = app.tab_mut();
     if suggestions.is_empty() {
-        app.filter.autocomplete_active = false;
-        app.filter.autocomplete_suggestions.clear();
+        tab.filter.autocomplete_active = false;
+        tab.filter.autocomplete_suggestions.clear();
     } else {
-        app.filter.autocomplete_active = true;
-        app.filter.autocomplete_suggestions = suggestions;
-        if app.filter.autocomplete_index >= app.filter.autocomplete_suggestions.len() {
-            app.filter.autocomplete_index = 0;
+        tab.filter.autocomplete_active = true;
+        tab.filter.autocomplete_suggestions = suggestions;
+        if tab.filter.autocomplete_index >= tab.filter.autocomplete_suggestions.len() {
+            tab.filter.autocomplete_index = 0;
         }
     }
 }
 
 fn apply_autocomplete(app: &mut App, name: &str) {
-    let (_partial, start) = match find_dollar_prefix(&app.filter.input) {
+    let (_partial, start) = match find_dollar_prefix(&app.tab().filter.input) {
         Some(v) => v,
         None => return,
     };
 
-    app.filter.input.truncate(start);
+    let tab = app.tab_mut();
+    tab.filter.input.truncate(start);
 
     let needs_quoting = name.contains(' ') || name.contains('"');
     if needs_quoting {
-        app.filter.input.push('$');
-        app.filter.input.push('"');
-        app.filter.input.push_str(name);
-        app.filter.input.push('"');
+        tab.filter.input.push('$');
+        tab.filter.input.push('"');
+        tab.filter.input.push_str(name);
+        tab.filter.input.push('"');
     } else {
-        app.filter.input.push('$');
-        app.filter.input.push_str(name);
+        tab.filter.input.push('$');
+        tab.filter.input.push_str(name);
     }
 }
 

@@ -96,7 +96,7 @@ impl Widget for StatsOverlay<'_> {
         // Build Arrow type overrides and colors for each row
         let (arrow_type_overrides, row_type_colors): (Vec<Option<String>>, Vec<Option<Color>>) =
             if let (Some(cn_idx), Some(_ct_idx), Some(app_schema)) =
-                (column_name_idx, column_type_idx, &self.app.data.schema)
+                (column_name_idx, column_type_idx, &self.app.tab().data.schema)
             {
                 let cn_col = batch.column(cn_idx);
                 let cn_array_utf8 = match cn_col.data_type() {

@@ -43,6 +43,7 @@ impl Widget for SqlPad<'_> {
 
         let table_name = self
             .app
+            .tab()
             .data
             .table_name
             .as_deref()
