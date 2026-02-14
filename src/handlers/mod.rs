@@ -1,3 +1,4 @@
+mod diff;
 mod filter;
 mod normal;
 mod search;
@@ -14,6 +15,9 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         AppMode::Filter | AppMode::Search | AppMode::Regex => filter::handle_key(app, key),
         AppMode::Sql => sql::handle_key(app, key),
         AppMode::Stats => stats::handle_key(app, key),
+        AppMode::DiffSetupKey => diff::handle_setup_key(app, key),
+        AppMode::DiffSetupCols => diff::handle_setup_cols(app, key),
+        AppMode::Diff => diff::handle_diff(app, key),
         AppMode::Quitting => {}
     }
 }

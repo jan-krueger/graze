@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use duckdb::arrow::datatypes::Schema;
@@ -153,6 +154,7 @@ pub struct TabState {
     pub fetch_pending: bool,
     pub search_pending: bool,
     pub pending_search_col_find: Option<(usize, String, bool)>,
+    pub file_path: Option<PathBuf>,
 }
 
 impl TabState {
@@ -165,6 +167,7 @@ impl TabState {
             fetch_pending: false,
             search_pending: false,
             pending_search_col_find: None,
+            file_path: None,
         }
     }
 }
@@ -188,6 +191,78 @@ impl SqlState {
             result: None,
             result_schema: None,
             error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMarker {
+    OnlyA,
+    OnlyB,
+    Common,
+    Changed,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiffCounts {
+    pub only_a: usize,
+    pub only_b: usize,
+    pub common: usize,
+    pub changed: usize,
+}
+
+/// Column picker state used by both diff setup steps.
+pub struct DiffSetup {
+    pub columns: Vec<String>,
+    pub selected: Vec<bool>,
+    pub cursor: usize,
+}
+
+impl DiffSetup {
+    pub fn new() -> Self {
+        Self {
+            columns: Vec::new(),
+            selected: Vec::new(),
+            cursor: 0,
+        }
+    }
+}
+
+/// Full diff view state.
+pub struct DiffState {
+    pub batch: Option<RecordBatch>,
+    pub schema: Option<Arc<Schema>>,
+    pub markers: Vec<DiffMarker>,
+    pub changed_cells: Vec<Vec<bool>>,
+    pub counts: DiffCounts,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub scroll_offset: usize,
+    pub column_offset: usize,
+    pub file_a: String,
+    pub file_b: String,
+    pub key_columns: Vec<String>,
+    pub diff_columns: Vec<String>,
+    pub setup: DiffSetup,
+}
+
+impl DiffState {
+    pub fn new() -> Self {
+        Self {
+            batch: None,
+            schema: None,
+            markers: Vec::new(),
+            changed_cells: Vec::new(),
+            counts: DiffCounts::default(),
+            loading: false,
+            error: None,
+            scroll_offset: 0,
+            column_offset: 0,
+            file_a: String::new(),
+            file_b: String::new(),
+            key_columns: Vec::new(),
+            diff_columns: Vec::new(),
+            setup: DiffSetup::new(),
         }
     }
 }

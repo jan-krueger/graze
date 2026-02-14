@@ -10,10 +10,11 @@ use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::DefaultTerminal;
 
+use crate::diff::DiffResult;
 use crate::event::{Action, DataEvent, TermEvent};
 use crate::ui::sql_pad::SQL_PAD_HEIGHT;
 use crate::state::{
-    SearchMode, SqlState, StatsState, TabState,
+    DiffState, SearchMode, SqlState, StatsState, TabState,
 };
 use crate::ui::AppView;
 use crate::worker::Worker;
@@ -28,6 +29,9 @@ pub enum AppMode {
     Filter,
     Sql,
     Stats,
+    DiffSetupKey,
+    DiffSetupCols,
+    Diff,
     Quitting,
 }
 
@@ -40,6 +44,9 @@ impl AppMode {
             AppMode::Filter => " FILTER ",
             AppMode::Sql => " SQL ",
             AppMode::Stats => " STATS ",
+            AppMode::DiffSetupKey => " KEY ",
+            AppMode::DiffSetupCols => " COLS ",
+            AppMode::Diff => " DIFF ",
             AppMode::Quitting => " QUIT ",
         }
     }
@@ -70,6 +77,18 @@ impl AppMode {
                 .bg(Color::Cyan)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
+            AppMode::DiffSetupKey => Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            AppMode::DiffSetupCols => Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            AppMode::Diff => Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             AppMode::Quitting => Style::default()
                 .bg(Color::Red)
                 .fg(Color::White)
@@ -98,6 +117,17 @@ impl AppMode {
             ],
             AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Esc", "cancel")],
             AppMode::Stats => &[("j/k", "scroll"), ("g/G", "top/bottom"), ("Esc", "close")],
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols => &[
+                ("Space", "toggle"),
+                ("Enter", "confirm"),
+                ("Esc", "cancel"),
+            ],
+            AppMode::Diff => &[
+                ("n", "next"),
+                ("N", "prev"),
+                ("h/l", "scroll"),
+                ("Esc", "close"),
+            ],
             AppMode::Quitting => &[],
         }
     }
@@ -127,6 +157,9 @@ impl AppMode {
                 Constraint::Length(1),
                 Constraint::Length(1),
             ],
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::Diff => {
+                vec![Constraint::Min(3), Constraint::Length(1)]
+            }
             _ => vec![Constraint::Min(3), Constraint::Length(1)],
         }
     }
@@ -155,10 +188,12 @@ pub struct App {
     pub active_tab: usize,
     pub sql: SqlState,
     pub stats: StatsState,
+    pub diff: DiffState,
     pub status_message: Option<String>,
     action_txs: Vec<Sender<Action>>,
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
+    diff_rx: Option<Receiver<DiffResult>>,
 }
 
 impl App {
@@ -181,9 +216,11 @@ impl App {
             let worker = Worker::new(action_rx, data_tx);
             thread::spawn(move || worker.run());
 
+            let mut tab = TabState::new();
+            tab.file_path = Some(file_path.clone());
             action_tx.send(Action::LoadFile(file_path))?;
 
-            tabs.push(TabState::new());
+            tabs.push(tab);
             action_txs.push(action_tx);
             data_rxs.push(data_rx);
         }
@@ -194,10 +231,12 @@ impl App {
             active_tab: 0,
             sql: SqlState::new(),
             stats: StatsState::new(),
+            diff: DiffState::new(),
             status_message: Some("Loading...".to_string()),
             action_txs,
             data_rxs,
             term_rx,
+            diff_rx: None,
         })
     }
 
@@ -378,6 +417,7 @@ impl App {
             }
 
             self.process_data_events();
+            self.poll_diff_result();
 
             match self.term_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(TermEvent::Key(key_event)) => {
@@ -686,6 +726,123 @@ impl App {
         if let Some(col_idx) = found_col {
             self.tab_mut().viewport.selected_col = col_idx;
             self.adjust_column_view();
+        }
+    }
+
+    pub(crate) fn enter_diff_setup(&mut self) {
+        if self.tabs.len() < 2 {
+            self.status_message = Some("Need 2+ tabs for diff".to_string());
+            return;
+        }
+        let schema = match self.tab().data.schema.as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                self.status_message = Some("No schema available".to_string());
+                return;
+            }
+        };
+        let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let len = columns.len();
+        self.diff.setup.columns = columns;
+        self.diff.setup.selected = vec![false; len];
+        self.diff.setup.cursor = 0;
+        self.mode = AppMode::DiffSetupKey;
+    }
+
+    pub(crate) fn start_diff(&mut self) {
+        let tab_a = self.active_tab;
+        let tab_b = (self.active_tab + 1) % self.tabs.len();
+
+        let path_a = match self.tabs[tab_a].file_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_message = Some("No file path for tab A".to_string());
+                self.mode = AppMode::Normal;
+                return;
+            }
+        };
+        let path_b = match self.tabs[tab_b].file_path.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                self.status_message = Some("No file path for tab B".to_string());
+                self.mode = AppMode::Normal;
+                return;
+            }
+        };
+
+        let file_a = path_a
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let file_b = path_b
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        self.diff.file_a = file_a;
+        self.diff.file_b = file_b;
+        self.diff.loading = true;
+        self.diff.error = None;
+        self.diff.batch = None;
+        self.diff.schema = None;
+        self.diff.markers.clear();
+        self.diff.changed_cells.clear();
+        self.diff.scroll_offset = 0;
+        self.diff.column_offset = 0;
+        self.mode = AppMode::Diff;
+        self.status_message = Some("Computing diff...".to_string());
+
+        let key_columns = self.diff.key_columns.clone();
+        let diff_columns = self.diff.diff_columns.clone();
+
+        let (tx, rx) = mpsc::channel::<DiffResult>();
+        self.diff_rx = Some(rx);
+
+        thread::spawn(move || {
+            let result =
+                crate::diff::compute_diff(&path_a, &path_b, &key_columns, &diff_columns);
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_diff_result(&mut self) {
+        let result = match self.diff_rx.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(r) => r,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.diff_rx = None;
+                    self.diff.loading = false;
+                    if self.diff.error.is_none() && self.diff.batch.is_none() {
+                        self.diff.error = Some("Diff thread disconnected".to_string());
+                        self.status_message = Some("Diff failed".to_string());
+                    }
+                    return;
+                }
+            },
+            None => return,
+        };
+
+        self.diff_rx = None;
+        self.diff.loading = false;
+
+        match result {
+            Ok(dr) => {
+                self.diff.counts = dr.counts;
+                self.diff.markers = dr.markers;
+                self.diff.changed_cells = dr.changed_cells;
+                self.diff.schema = Some(dr.schema);
+                self.diff.batch = Some(dr.batch);
+                let c = &self.diff.counts;
+                self.status_message = Some(format!(
+                    "+{} -{} ~{} ={}",
+                    c.only_a, c.only_b, c.changed, c.common
+                ));
+            }
+            Err(e) => {
+                self.diff.error = Some(format!("{e}"));
+                self.status_message = Some(format!("Diff error: {e}"));
+            }
         }
     }
 

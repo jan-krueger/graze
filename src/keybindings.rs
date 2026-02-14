@@ -24,6 +24,7 @@
 /// | Esc       | Clear filter and search                     |
 /// | n         | Jump to next search match (full dataset)     |
 /// | N         | Jump to previous search match (full dataset) |
+/// | D         | Open diff mode (requires 2+ tabs)            |
 /// | ]         | Switch to next tab                           |
 /// | [         | Switch to previous tab                       |
 ///
@@ -98,6 +99,48 @@
 /// | Ctrl-u    | Scroll up half page             |
 /// | Esc       | Close stats overlay             |
 ///
+/// # Diff Setup Key Mode (`D` step 1)
+///
+/// Select key columns for row matching via JOIN.
+///
+/// | Key       | Action                          |
+/// |-----------|---------------------------------|
+/// | j / Down  | Move cursor down                |
+/// | k / Up    | Move cursor up                  |
+/// | Space     | Toggle column selection          |
+/// | Enter     | Confirm (at least 1 required)   |
+/// | Esc       | Cancel                          |
+///
+/// # Diff Setup Cols Mode (`D` step 2)
+///
+/// Select which columns to compare for differences.
+///
+/// | Key       | Action                          |
+/// |-----------|---------------------------------|
+/// | j / Down  | Move cursor down                |
+/// | k / Up    | Move cursor up                  |
+/// | Space     | Toggle column selection          |
+/// | Enter     | Confirm (at least 1 required)   |
+/// | Esc       | Cancel                          |
+///
+/// # Diff Mode
+///
+/// Unified diff view comparing two tabs.
+///
+/// | Key       | Action                          |
+/// |-----------|---------------------------------|
+/// | j / Down  | Scroll down one row             |
+/// | k / Up    | Scroll up one row               |
+/// | g         | Scroll to top                   |
+/// | G         | Scroll to bottom                |
+/// | Ctrl-d    | Scroll down half page           |
+/// | Ctrl-u    | Scroll up half page             |
+/// | h / Left  | Scroll columns left             |
+/// | l / Right | Scroll columns right            |
+/// | n         | Jump to next diff row           |
+/// | N         | Jump to previous diff row       |
+/// | Esc       | Close diff view                 |
+///
 /// # Sort Cycling
 ///
 /// Pressing `s` on a column cycles through:
@@ -136,4 +179,4 @@
 /// `n`/`N` always navigate search matches regardless of filter state.
 /// Use `j`/`k` or arrow keys to navigate rows when a filter is active.
 #[allow(dead_code)]
-pub const KEYBINDINGS_VERSION: u8 = 11;
+pub const KEYBINDINGS_VERSION: u8 = 12;

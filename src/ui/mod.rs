@@ -1,3 +1,5 @@
+pub mod column_picker;
+pub mod diff_view;
 pub mod input_bar;
 pub mod sql_pad;
 pub mod stats_overlay;
@@ -13,6 +15,8 @@ use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
 
+use self::column_picker::ColumnPicker;
+use self::diff_view::DiffView;
 use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
 use self::stats_overlay::StatsOverlay;
@@ -50,10 +54,22 @@ impl Widget for AppView<'_> {
         );
         let show_sql = matches!(self.app.mode, AppMode::Sql);
         let show_stats = matches!(self.app.mode, AppMode::Stats);
+        let show_diff_setup = matches!(
+            self.app.mode,
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols
+        );
+        let show_diff = matches!(self.app.mode, AppMode::Diff);
 
         let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(main_area);
 
-        if show_stats {
+        if show_diff_setup {
+            TableView::new(self.app).render(chunks[0], buf);
+            StatusBar::new(self.app).render(chunks[1], buf);
+            ColumnPicker::new(self.app).render(area, buf);
+        } else if show_diff {
+            DiffView::new(self.app).render(chunks[0], buf);
+            StatusBar::new(self.app).render(chunks[1], buf);
+        } else if show_stats {
             TableView::new(self.app).render(chunks[0], buf);
             StatsOverlay::new(self.app).render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);

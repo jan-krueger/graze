@@ -1,4 +1,5 @@
 pub mod app;
+pub mod diff;
 pub mod event;
 mod handlers;
 mod keybindings;

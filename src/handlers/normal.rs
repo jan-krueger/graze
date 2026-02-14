@@ -177,6 +177,11 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
 
+        // Diff mode
+        KeyCode::Char('D') => {
+            app.enter_diff_setup();
+        }
+
         // Tab switching
         KeyCode::Char(']') => {
             if app.has_tabs() {
