@@ -94,50 +94,25 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Backspace => {
-            let tab = app.tab_mut();
-            if tab.filter.cursor_pos > 0 {
-                let byte_pos = tab.filter.input.char_indices()
-                    .nth(tab.filter.cursor_pos - 1)
-                    .map(|(i, _)| i)
-                    .unwrap_or(tab.filter.input.len());
-                tab.filter.input.remove(byte_pos);
-                tab.filter.cursor_pos -= 1;
-            }
+            app.tab_mut().filter.delete_before_cursor();
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
         }
         KeyCode::Char(c) => {
-            let tab = app.tab_mut();
-            let byte_pos = tab.filter.input.char_indices()
-                .nth(tab.filter.cursor_pos)
-                .map(|(i, _)| i)
-                .unwrap_or(tab.filter.input.len());
-            tab.filter.input.insert(byte_pos, c);
-            tab.filter.cursor_pos += 1;
+            app.tab_mut().filter.insert_at_cursor(c);
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
         }
-        KeyCode::Left => {
-            if !app.tab().filter.autocomplete_active {
-                app.tab_mut().filter.cursor_pos = app.tab().filter.cursor_pos.saturating_sub(1);
-            }
+        KeyCode::Left if !app.tab().filter.autocomplete_active => {
+            app.tab_mut().filter.move_cursor_left();
         }
-        KeyCode::Right => {
-            if !app.tab().filter.autocomplete_active {
-                let char_count = app.tab().filter.input.chars().count();
-                let tab = app.tab_mut();
-                tab.filter.cursor_pos = (tab.filter.cursor_pos + 1).min(char_count);
-            }
+        KeyCode::Right if !app.tab().filter.autocomplete_active => {
+            app.tab_mut().filter.move_cursor_right();
         }
-        KeyCode::Home => {
-            app.tab_mut().filter.cursor_pos = 0;
-        }
-        KeyCode::End => {
-            let char_count = app.tab().filter.input.chars().count();
-            app.tab_mut().filter.cursor_pos = char_count;
-        }
+        KeyCode::Home => app.tab_mut().filter.move_cursor_to_start(),
+        KeyCode::End => app.tab_mut().filter.move_cursor_to_end(),
         _ => {}
     }
 }
@@ -201,7 +176,7 @@ fn apply_autocomplete(app: &mut App, name: &str) {
         tab.filter.input.push('$');
         tab.filter.input.push_str(name);
     }
-    tab.filter.cursor_pos = tab.filter.input.chars().count();
+    tab.filter.move_cursor_to_end();
 }
 
 fn find_dollar_prefix(input: &str) -> Option<(String, usize)> {

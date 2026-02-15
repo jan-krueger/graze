@@ -169,12 +169,8 @@ impl AppMode {
             AppMode::Search | AppMode::Regex | AppMode::Filter => {
                 use unicode_width::UnicodeWidthStr;
                 let filter_y = area_height - 2;
-                let input = &app.tab().filter.input;
-                let byte_pos = input.char_indices()
-                    .nth(app.tab().filter.cursor_pos)
-                    .map(|(i, _)| i)
-                    .unwrap_or(input.len());
-                let cursor_x = 8 + input[..byte_pos].width() as u16;
+                let filter = &app.tab().filter;
+                let cursor_x = 8 + filter.input[..filter.cursor_byte_pos()].width() as u16;
                 Some((cursor_x, filter_y))
             }
             AppMode::Sql => {
