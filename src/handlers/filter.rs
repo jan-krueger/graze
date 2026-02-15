@@ -94,16 +94,49 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Backspace => {
-            app.tab_mut().filter.input.pop();
+            let tab = app.tab_mut();
+            if tab.filter.cursor_pos > 0 {
+                let byte_pos = tab.filter.input.char_indices()
+                    .nth(tab.filter.cursor_pos - 1)
+                    .map(|(i, _)| i)
+                    .unwrap_or(tab.filter.input.len());
+                tab.filter.input.remove(byte_pos);
+                tab.filter.cursor_pos -= 1;
+            }
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
         }
         KeyCode::Char(c) => {
-            app.tab_mut().filter.input.push(c);
+            let tab = app.tab_mut();
+            let byte_pos = tab.filter.input.char_indices()
+                .nth(tab.filter.cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(tab.filter.input.len());
+            tab.filter.input.insert(byte_pos, c);
+            tab.filter.cursor_pos += 1;
             if app.mode == AppMode::Filter {
                 update_autocomplete(app);
             }
+        }
+        KeyCode::Left => {
+            if !app.tab().filter.autocomplete_active {
+                app.tab_mut().filter.cursor_pos = app.tab().filter.cursor_pos.saturating_sub(1);
+            }
+        }
+        KeyCode::Right => {
+            if !app.tab().filter.autocomplete_active {
+                let char_count = app.tab().filter.input.chars().count();
+                let tab = app.tab_mut();
+                tab.filter.cursor_pos = (tab.filter.cursor_pos + 1).min(char_count);
+            }
+        }
+        KeyCode::Home => {
+            app.tab_mut().filter.cursor_pos = 0;
+        }
+        KeyCode::End => {
+            let char_count = app.tab().filter.input.chars().count();
+            app.tab_mut().filter.cursor_pos = char_count;
         }
         _ => {}
     }
@@ -168,6 +201,7 @@ fn apply_autocomplete(app: &mut App, name: &str) {
         tab.filter.input.push('$');
         tab.filter.input.push_str(name);
     }
+    tab.filter.cursor_pos = tab.filter.input.chars().count();
 }
 
 fn find_dollar_prefix(input: &str) -> Option<(String, usize)> {

@@ -167,8 +167,14 @@ impl AppMode {
     pub fn cursor_position(&self, app: &App, area_height: u16) -> Option<(u16, u16)> {
         match self {
             AppMode::Search | AppMode::Regex | AppMode::Filter => {
+                use unicode_width::UnicodeWidthStr;
                 let filter_y = area_height - 2;
-                let cursor_x = 8 + app.tab().filter.input.len() as u16;
+                let input = &app.tab().filter.input;
+                let byte_pos = input.char_indices()
+                    .nth(app.tab().filter.cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(input.len());
+                let cursor_x = 8 + input[..byte_pos].width() as u16;
                 Some((cursor_x, filter_y))
             }
             AppMode::Sql => {
@@ -395,8 +401,7 @@ impl App {
                 frame.render_widget(AppView::new(self), area);
 
                 if let Some((cx, cy)) = self.mode.cursor_position(self, area.height) {
-                    let offset_y = if self.has_tabs() { 1u16 } else { 0 };
-                    frame.set_cursor_position((cx, cy + offset_y));
+                    frame.set_cursor_position((cx, cy));
                 }
             })?;
 

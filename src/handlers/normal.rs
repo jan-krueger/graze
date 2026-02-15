@@ -96,6 +96,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Char('$') => {
             app.tab_mut().filter.input.clear();
+            app.tab_mut().filter.cursor_pos = 0;
             app.mode = AppMode::Regex;
         }
 
@@ -123,6 +124,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         // Search / Filter
         KeyCode::Char('/') => {
             app.tab_mut().filter.input.clear();
+            app.tab_mut().filter.cursor_pos = 0;
             app.mode = AppMode::Search;
         }
         KeyCode::Char('f') => {
@@ -132,7 +134,11 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 if !fields.is_empty() {
                     let col_idx = app.tab().viewport.selected_col.min(fields.len() - 1);
                     let col_name = fields[col_idx].name().clone();
-                    app.tab_mut().filter.input = format!("\"{}\" = ", col_name);
+                    let prefill = format!("\"{}\" = ", col_name);
+                    let cursor = prefill.chars().count();
+                    let tab = app.tab_mut();
+                    tab.filter.input = prefill;
+                    tab.filter.cursor_pos = cursor;
                     app.mode = AppMode::Filter;
                 }
             }

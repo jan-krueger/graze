@@ -102,6 +102,7 @@ impl DataState {
 /// Filter mode state: input, active filter, autocomplete.
 pub struct FilterState {
     pub input: String,
+    pub cursor_pos: usize,
     pub active_filter: Option<String>,
     pub autocomplete_suggestions: Vec<String>,
     pub autocomplete_index: usize,
@@ -112,6 +113,7 @@ impl FilterState {
     pub fn new() -> Self {
         Self {
             input: String::new(),
+            cursor_pos: 0,
             active_filter: None,
             autocomplete_suggestions: Vec::new(),
             autocomplete_index: 0,
