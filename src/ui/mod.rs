@@ -50,7 +50,7 @@ impl Widget for AppView<'_> {
 
         let show_input_bar = matches!(
             self.app.mode,
-            AppMode::Filter | AppMode::Search | AppMode::Regex
+            AppMode::Filter | AppMode::Search | AppMode::Regex | AppMode::GoToRow
         );
         let show_sql = matches!(self.app.mode, AppMode::Sql);
         let show_stats = matches!(self.app.mode, AppMode::Stats);
@@ -58,11 +58,16 @@ impl Widget for AppView<'_> {
             self.app.mode,
             AppMode::DiffSetupKey | AppMode::DiffSetupCols
         );
+        let show_column_hide = matches!(self.app.mode, AppMode::ColumnHide);
         let show_diff = matches!(self.app.mode, AppMode::Diff);
 
         let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(main_area);
 
-        if show_diff_setup {
+        if show_column_hide {
+            TableView::new(self.app).render(chunks[0], buf);
+            StatusBar::new(self.app).render(chunks[1], buf);
+            ColumnPicker::new(self.app).render(area, buf);
+        } else if show_diff_setup {
             TableView::new(self.app).render(chunks[0], buf);
             StatusBar::new(self.app).render(chunks[1], buf);
             ColumnPicker::new(self.app).render(area, buf);
@@ -91,6 +96,7 @@ impl Widget for AppView<'_> {
             let (prompt, color) = match self.app.mode {
                 AppMode::Regex => ("Regex:  ", Color::Magenta),
                 AppMode::Filter => ("Filter: ", Color::Green),
+                AppMode::GoToRow => ("Goto:   ", Color::Blue),
                 _ => ("Search: ", Color::Yellow),
             };
             InputBar::new(prompt, color, &self.app.tab().filter.input)

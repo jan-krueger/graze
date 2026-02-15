@@ -122,16 +122,21 @@ pub fn compute_column_widths(
 
 /// Determine which columns fit in the available width, starting from `column_offset`.
 /// `left_margin` is the width used before the first column (e.g. 3 for row prefix ">> ").
+/// `hidden` optionally specifies which columns are hidden and should be skipped.
 pub fn visible_columns(
     col_widths: &[u16],
     available_width: usize,
     column_offset: usize,
     left_margin: usize,
+    hidden: Option<&[bool]>,
 ) -> Vec<usize> {
     let mut visible_cols = Vec::new();
     let mut used_width = left_margin;
 
     for i in column_offset..col_widths.len() {
+        if hidden.map_or(false, |h| h.get(i).copied().unwrap_or(false)) {
+            continue;
+        }
         let col_total = col_widths[i] as usize + 2;
         if used_width + col_total > available_width && !visible_cols.is_empty() {
             break;
@@ -239,6 +244,10 @@ pub struct UnifiedTable<'a> {
     styler: &'a dyn TableStyler,
     /// Optional per-column minimum width overrides: (col_idx, min_width).
     col_width_mins: Option<&'a [(usize, u16)]>,
+    /// Optional per-column hidden flags.
+    hidden: Option<&'a [bool]>,
+    /// Optional per-column max width caps.
+    col_width_caps: Option<&'a [u16]>,
 }
 
 impl<'a> UnifiedTable<'a> {
@@ -258,6 +267,8 @@ impl<'a> UnifiedTable<'a> {
             sort_state: None,
             styler,
             col_width_mins: None,
+            hidden: None,
+            col_width_caps: None,
         }
     }
 
@@ -294,6 +305,18 @@ impl<'a> UnifiedTable<'a> {
     /// Provide per-column minimum width overrides as (col_idx, min_width) pairs.
     pub fn col_width_mins(mut self, mins: &'a [(usize, u16)]) -> Self {
         self.col_width_mins = Some(mins);
+        self
+    }
+
+    /// Provide per-column hidden flags.
+    pub fn hidden(mut self, hidden: &'a [bool]) -> Self {
+        self.hidden = Some(hidden);
+        self
+    }
+
+    /// Provide per-column max width caps.
+    pub fn col_width_caps(mut self, caps: &'a [u16]) -> Self {
+        self.col_width_caps = Some(caps);
         self
     }
 }
@@ -347,11 +370,21 @@ impl Widget for UnifiedTable<'_> {
             }
         }
 
+        // Apply per-column max width caps
+        if let Some(caps) = self.col_width_caps {
+            for (i, width) in col_widths.iter_mut().enumerate() {
+                if let Some(&cap) = caps.get(i) {
+                    *width = (*width).min(cap).max(4);
+                }
+            }
+        }
+
         let visible_cols = visible_columns(
             &col_widths,
             area.width as usize,
             self.column_offset,
             self.left_margin,
+            self.hidden,
         );
 
         if visible_cols.is_empty() {

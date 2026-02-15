@@ -32,6 +32,8 @@ pub enum AppMode {
     DiffSetupKey,
     DiffSetupCols,
     Diff,
+    GoToRow,
+    ColumnHide,
     Quitting,
 }
 
@@ -47,6 +49,8 @@ impl AppMode {
             AppMode::DiffSetupKey => " KEY ",
             AppMode::DiffSetupCols => " COLS ",
             AppMode::Diff => " DIFF ",
+            AppMode::GoToRow => " GOTO ",
+            AppMode::ColumnHide => " COLS ",
             AppMode::Quitting => " QUIT ",
         }
     }
@@ -89,6 +93,14 @@ impl AppMode {
                 .bg(Color::Cyan)
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+            AppMode::GoToRow => Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            AppMode::ColumnHide => Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
             AppMode::Quitting => Style::default()
                 .bg(Color::Red)
                 .fg(Color::White)
@@ -102,11 +114,11 @@ impl AppMode {
                 ("Tab", "mode"),
                 ("q", "quit"),
                 ("/", "search"),
-                ("$", "regex"),
                 ("f", "filter"),
                 ("s", "sort"),
-                ("S", "stats"),
-                ("e", "sql"),
+                (":", "goto"),
+                ("H", "cols"),
+                ("+/-", "width"),
             ],
             AppMode::Search | AppMode::Regex => &[("Enter", "apply"), ("Esc", "cancel")],
             AppMode::Filter => &[
@@ -117,11 +129,12 @@ impl AppMode {
             ],
             AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Esc", "cancel")],
             AppMode::Stats => &[("j/k", "scroll"), ("g/G", "top/bottom"), ("Esc", "close")],
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols => &[
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide => &[
                 ("Space", "toggle"),
                 ("Enter", "confirm"),
                 ("Esc", "cancel"),
             ],
+            AppMode::GoToRow => &[("Enter", "go"), ("Esc", "cancel")],
             AppMode::Diff => &[
                 ("n", "next"),
                 ("N", "prev"),
@@ -152,12 +165,12 @@ impl AppMode {
                 Constraint::Length(SQL_PAD_HEIGHT),
                 Constraint::Length(1),
             ],
-            AppMode::Search | AppMode::Regex | AppMode::Filter => vec![
+            AppMode::Search | AppMode::Regex | AppMode::Filter | AppMode::GoToRow => vec![
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(1),
             ],
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::Diff => {
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide | AppMode::Diff => {
                 vec![Constraint::Min(3), Constraint::Length(1)]
             }
             _ => vec![Constraint::Min(3), Constraint::Length(1)],
@@ -172,6 +185,13 @@ impl AppMode {
                 let filter = &app.tab().filter;
                 let cursor_x = 8 + filter.input[..filter.cursor_byte_pos()].width() as u16;
                 Some((cursor_x, filter_y))
+            }
+            AppMode::GoToRow => {
+                use unicode_width::UnicodeWidthStr;
+                let input_y = area_height - 2;
+                let filter = &app.tab().filter;
+                let cursor_x = 8 + filter.input[..filter.cursor_byte_pos()].width() as u16;
+                Some((cursor_x, input_y))
             }
             AppMode::Sql => {
                 let sql_input_start_y = area_height.saturating_sub(6);
@@ -321,11 +341,13 @@ impl App {
         );
 
         let row_prefix_width = 3;
+        let hidden = &tab.hidden_columns;
         let cols = visible_columns(
             &col_widths,
             tab.viewport.terminal_width as usize,
             tab.viewport.column_offset,
             row_prefix_width,
+            if hidden.is_empty() { None } else { Some(hidden) },
         );
 
         cols.len().max(1)
@@ -445,11 +467,18 @@ impl App {
                 table_name,
             } => {
                 let tab = &mut self.tabs[tab_idx];
+                let num_cols = schema.fields().len();
                 tab.data.schema = Some(schema);
                 tab.data.total_rows = total_rows;
                 tab.data.file_name = Some(file_name);
                 tab.data.table_name = Some(table_name);
                 tab.fetch_pending = false;
+                if tab.hidden_columns.len() != num_cols {
+                    tab.hidden_columns = vec![false; num_cols];
+                }
+                if tab.viewport.col_width_overrides.len() != num_cols {
+                    tab.viewport.col_width_overrides = vec![0i16; num_cols];
+                }
                 if is_active {
                     self.status_message = None;
                 }

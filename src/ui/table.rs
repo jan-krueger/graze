@@ -201,8 +201,8 @@ impl SearchMatcher {
 
 /// Styler for the normal table view: row/column selection, search highlighting, filter highlighting.
 struct NormalStyler {
-    selected_row_in_view: usize,
-    visible_count: usize,
+    /// Buffer-relative index of the selected row (selected_row - buffer_offset).
+    selected_data_row: usize,
     col_select_active: bool,
     selected_col: usize,
     search_matcher: Option<SearchMatcher>,
@@ -220,9 +220,7 @@ impl TableStyler for NormalStyler {
     }
 
     fn row_prefix(&self, data_row: usize) -> (&str, Style) {
-        let display_row = data_row; // data_row is relative to scroll_offset
-        let is_selected = display_row < self.visible_count
-            && display_row == self.selected_row_in_view;
+        let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
         if show_highlight {
             (">> ", Style::default().bg(Color::DarkGray).fg(Color::Yellow))
@@ -232,9 +230,7 @@ impl TableStyler for NormalStyler {
     }
 
     fn row_bg(&self, data_row: usize) -> Style {
-        let display_row = data_row;
-        let is_selected = display_row < self.visible_count
-            && display_row == self.selected_row_in_view;
+        let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
         if show_highlight {
             Style::default().bg(Color::DarkGray)
@@ -319,7 +315,6 @@ impl Widget for TableView<'_> {
         }
 
         let view_off = self.app.view_offset_in_buffer();
-        let visible_count = self.app.visible_row_count();
 
         let col_select_active = tab.viewport.selection_mode == SelectionMode::Column;
         let selected_col = tab.viewport.selected_col;
@@ -339,9 +334,13 @@ impl Widget for TableView<'_> {
 
         let search_matcher = SearchMatcher::from_search_state(self.app);
 
+        let selected_data_row = tab
+            .viewport
+            .selected_row
+            .saturating_sub(tab.data.buffer_offset);
+
         let styler = NormalStyler {
-            selected_row_in_view: tab.viewport.selected_row_in_view(),
-            visible_count,
+            selected_data_row,
             col_select_active,
             selected_col,
             search_matcher,
@@ -349,10 +348,45 @@ impl Widget for TableView<'_> {
             highlight_col_idx,
         };
 
-        UnifiedTable::new(schema, batch, &styler)
+        // Build per-column width overrides
+        let overrides = &tab.viewport.col_width_overrides;
+        let default_max: u16 = 50;
+
+        // For columns with positive override: set a minimum width so they actually expand.
+        // For columns with negative override: cap reduces below default.
+        let col_mins: Vec<(usize, u16)> = overrides
+            .iter()
+            .enumerate()
+            .filter(|&(_, v)| *v > 0)
+            .map(|(i, v)| (i, (default_max as i16 + v).max(4) as u16))
+            .collect();
+
+        let col_caps: Vec<u16> = if overrides.is_empty() {
+            vec![default_max; schema.fields().len()]
+        } else {
+            overrides
+                .iter()
+                .map(|v| (default_max as i16 + v).max(4) as u16)
+                .collect()
+        };
+        let global_max = col_caps.iter().copied().max().unwrap_or(default_max);
+
+        let hidden = &tab.hidden_columns;
+
+        let mut table = UnifiedTable::new(schema, batch, &styler)
             .scroll_offset(view_off)
             .column_offset(tab.viewport.column_offset)
             .sort_state(&tab.data.sort_state)
-            .render(area, buf);
+            .max_col_width(global_max)
+            .col_width_caps(&col_caps);
+
+        if !col_mins.is_empty() {
+            table = table.col_width_mins(&col_mins);
+        }
+        if !hidden.is_empty() {
+            table = table.hidden(hidden);
+        }
+
+        table.render(area, buf);
     }
 }

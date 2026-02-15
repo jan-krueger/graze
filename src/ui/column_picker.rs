@@ -26,6 +26,7 @@ impl Widget for ColumnPicker<'_> {
         let title = match self.app.mode {
             AppMode::DiffSetupKey => "Select key column(s)",
             AppMode::DiffSetupCols => "Select columns to compare",
+            AppMode::ColumnHide => "Show/hide columns",
             _ => return,
         };
 

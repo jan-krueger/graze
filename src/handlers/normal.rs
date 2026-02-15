@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{App, AppMode};
 use crate::event::Action;
-use crate::state::SelectionMode;
+use crate::state::{SelectionMode, next_visible_col};
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
@@ -54,12 +54,18 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             match app.tab().viewport.selection_mode {
                 SelectionMode::Row => {
                     if app.tab().viewport.column_offset > 0 {
-                        app.tab_mut().viewport.column_offset -= 1;
+                        let hidden = &app.tab().hidden_columns;
+                        let new_off = next_visible_col(app.tab().viewport.column_offset, -1, hidden, 0);
+                        app.tab_mut().viewport.column_offset = new_off;
                     }
                 }
                 SelectionMode::Column => {
-                    if app.tab().viewport.selected_col > 0 {
-                        app.tab_mut().viewport.selected_col -= 1;
+                    let hidden = &app.tab().hidden_columns;
+                    let cur = app.tab().viewport.selected_col;
+                    if let Some(ref schema) = app.tab().data.schema {
+                        let max_col = schema.fields().len().saturating_sub(1);
+                        let new_col = next_visible_col(cur, -1, hidden, max_col);
+                        app.tab_mut().viewport.selected_col = new_col;
                         app.adjust_column_view();
                     }
                 }
@@ -68,28 +74,31 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('l') | KeyCode::Right => {
             if let Some(ref schema) = app.tab().data.schema {
                 let max_col = schema.fields().len().saturating_sub(1);
+                let hidden = &app.tab().hidden_columns;
                 match app.tab().viewport.selection_mode {
                     SelectionMode::Row => {
-                        if app.tab().viewport.column_offset < max_col {
-                            app.tab_mut().viewport.column_offset += 1;
-                        }
+                        let new_off = next_visible_col(app.tab().viewport.column_offset, 1, hidden, max_col);
+                        app.tab_mut().viewport.column_offset = new_off;
                     }
                     SelectionMode::Column => {
-                        if app.tab().viewport.selected_col < max_col {
-                            app.tab_mut().viewport.selected_col += 1;
-                            app.adjust_column_view();
-                        }
+                        let cur = app.tab().viewport.selected_col;
+                        let new_col = next_visible_col(cur, 1, hidden, max_col);
+                        app.tab_mut().viewport.selected_col = new_col;
+                        app.adjust_column_view();
                     }
                 }
             }
         }
         KeyCode::Char('0') => {
+            let hidden = &app.tab().hidden_columns;
+            let first = crate::state::first_visible_col(hidden,
+                app.tab().data.schema.as_ref().map_or(0, |s| s.fields().len().saturating_sub(1)));
             match app.tab().viewport.selection_mode {
                 SelectionMode::Row => {
-                    app.tab_mut().viewport.column_offset = 0;
+                    app.tab_mut().viewport.column_offset = first;
                 }
                 SelectionMode::Column => {
-                    app.tab_mut().viewport.selected_col = 0;
+                    app.tab_mut().viewport.selected_col = first;
                     app.adjust_column_view();
                 }
             }
@@ -186,6 +195,46 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         // Diff mode
         KeyCode::Char('D') => {
             app.enter_diff_setup();
+        }
+
+        // Go-to-row
+        KeyCode::Char(':') => {
+            let filter = &mut app.tab_mut().filter;
+            filter.input.clear();
+            filter.cursor_pos = 0;
+            app.mode = AppMode::GoToRow;
+        }
+
+        // Column hide picker
+        KeyCode::Char('H') => {
+            if let Some(ref schema) = app.tab().data.schema {
+                let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+                let selected = if app.tab().hidden_columns.len() == columns.len() {
+                    app.tab().hidden_columns.clone()
+                } else {
+                    vec![false; columns.len()]
+                };
+                app.diff.setup.columns = columns;
+                app.diff.setup.selected = selected;
+                app.diff.setup.cursor = 0;
+                app.mode = AppMode::ColumnHide;
+            }
+        }
+
+        // Per-column width adjust
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            let col = app.tab().viewport.selected_col;
+            let overrides = &mut app.tab_mut().viewport.col_width_overrides;
+            if col < overrides.len() {
+                overrides[col] = (overrides[col] + 2).min(450);
+            }
+        }
+        KeyCode::Char('-') => {
+            let col = app.tab().viewport.selected_col;
+            let overrides = &mut app.tab_mut().viewport.col_width_overrides;
+            if col < overrides.len() {
+                overrides[col] = (overrides[col] - 2).max(-46);
+            }
         }
 
         // Tab switching

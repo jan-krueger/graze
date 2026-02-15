@@ -21,6 +21,7 @@ pub struct Viewport {
     pub selected_col: usize,
     pub selection_mode: SelectionMode,
     pub terminal_width: u16,
+    pub col_width_overrides: Vec<i16>,
 }
 
 impl Viewport {
@@ -33,6 +34,7 @@ impl Viewport {
             selected_col: 0,
             selection_mode: SelectionMode::Row,
             terminal_width: 0,
+            col_width_overrides: Vec::new(),
         }
     }
 
@@ -202,6 +204,7 @@ pub struct TabState {
     pub search_pending: bool,
     pub pending_search_col_find: Option<(usize, String, bool)>,
     pub file_path: Option<PathBuf>,
+    pub hidden_columns: Vec<bool>,
 }
 
 impl TabState {
@@ -215,6 +218,7 @@ impl TabState {
             search_pending: false,
             pending_search_col_find: None,
             file_path: None,
+            hidden_columns: Vec::new(),
         }
     }
 }
@@ -256,6 +260,29 @@ pub struct DiffCounts {
     pub only_b: usize,
     pub common: usize,
     pub changed: usize,
+}
+
+/// Find the next visible (non-hidden) column in the given direction.
+/// Returns `current` if no visible column is found.
+pub fn next_visible_col(current: usize, direction: isize, hidden: &[bool], max_col: usize) -> usize {
+    let mut col = current as isize + direction;
+    while col >= 0 && (col as usize) <= max_col {
+        if !hidden.get(col as usize).copied().unwrap_or(false) {
+            return col as usize;
+        }
+        col += direction;
+    }
+    current
+}
+
+/// Find the first visible (non-hidden) column at or after `start`.
+pub fn first_visible_col(hidden: &[bool], max_col: usize) -> usize {
+    for i in 0..=max_col {
+        if !hidden.get(i).copied().unwrap_or(false) {
+            return i;
+        }
+    }
+    0
 }
 
 /// Column picker state used by both diff setup steps.

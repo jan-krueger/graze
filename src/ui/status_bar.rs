@@ -71,6 +71,14 @@ impl Widget for StatusBar<'_> {
             x += pos_str.len() as u16;
         }
 
+        // Wide indicator (any column width override)
+        if tab.viewport.col_width_overrides.iter().any(|&v| v != 0) {
+            let wide_str = " [WIDE] ";
+            let wide_style = bg_style.fg(Color::Cyan);
+            buf.set_string(x, area.y, wide_str, wide_style);
+            x += wide_str.len() as u16;
+        }
+
         // Active filter indicator
         if let Some(ref filter) = tab.filter.active_filter {
             let filter_str = format!(" [Filter: {}] ", filter);
