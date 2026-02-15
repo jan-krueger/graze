@@ -12,6 +12,18 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::event::SortState;
 
+pub const DEFAULT_MAX_COL_WIDTH: u16 = 50;
+pub const ROW_PREFIX_WIDTH: usize = 3; // ">> " or "   "
+
+/// Compute the row-number gutter width (digits + 1 separator).
+pub fn gutter_width(total_rows: usize) -> usize {
+    if total_rows == 0 {
+        2
+    } else {
+        (total_rows as f64).log10() as usize + 2
+    }
+}
+
 /// Map an Arrow DataType to a display color by category.
 pub fn type_color(data_type: &DataType) -> Color {
     match data_type {
@@ -362,14 +374,12 @@ impl Widget for UnifiedTable<'_> {
         };
 
         // Row number gutter width (0 when disabled).
-        let (gutter_width, row_num_base) = if let Some((base, total)) = self.row_numbers {
-            // Width = digits needed for max row number (1-based) + 1 space separator
-            let digits = if total == 0 { 1 } else { ((total) as f64).log10() as usize + 1 };
-            (digits + 1, base)
+        let (gutter_w, row_num_base) = if let Some((base, total)) = self.row_numbers {
+            (gutter_width(total), base)
         } else {
             (0, 0)
         };
-        let effective_left_margin = gutter_width + self.left_margin;
+        let effective_left_margin = gutter_w + self.left_margin;
 
         let data_area_height = (area.height as usize).saturating_sub(1); // minus header row
         let sample_end = (self.scroll_offset + data_area_height).min(batch_rows);
@@ -414,7 +424,7 @@ impl Widget for UnifiedTable<'_> {
         }
 
         let gutter_style = Style::default().fg(Color::DarkGray);
-        let num_col_width = gutter_width.saturating_sub(1); // digits only, no separator
+        let num_col_width = gutter_w.saturating_sub(1); // digits only, no separator
 
         // --- Render header row ---
         let header_y = area.y;
@@ -529,7 +539,7 @@ impl Widget for UnifiedTable<'_> {
 
             // Row prefix (e.g. ">> " for selected row)
             let (prefix, prefix_style) = self.styler.row_prefix(data_row);
-            buf.set_string(area.x + gutter_width as u16, row_y, prefix, prefix_style);
+            buf.set_string(area.x + gutter_w as u16, row_y, prefix, prefix_style);
 
             // Cells
             let mut x = area.x + effective_left_margin as u16;

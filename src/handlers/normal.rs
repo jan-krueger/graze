@@ -4,6 +4,10 @@ use crate::app::{App, AppMode};
 use crate::event::Action;
 use crate::state::{SelectionMode, next_visible_col};
 
+const COL_WIDTH_STEP: i16 = 2;
+const MAX_COL_WIDTH_OVERRIDE: i16 = 450;
+const MIN_COL_WIDTH_OVERRIDE: i16 = -46;
+
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Char('q') => {
@@ -228,14 +232,14 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             let col = app.tab().viewport.selected_col;
             let overrides = &mut app.tab_mut().viewport.col_width_overrides;
             if col < overrides.len() {
-                overrides[col] = (overrides[col] + 2).min(450);
+                overrides[col] = (overrides[col] + COL_WIDTH_STEP).min(MAX_COL_WIDTH_OVERRIDE);
             }
         }
         KeyCode::Char('-') => {
             let col = app.tab().viewport.selected_col;
             let overrides = &mut app.tab_mut().viewport.col_width_overrides;
             if col < overrides.len() {
-                overrides[col] = (overrides[col] - 2).max(-46);
+                overrides[col] = (overrides[col] - COL_WIDTH_STEP).max(MIN_COL_WIDTH_OVERRIDE);
             }
         }
 

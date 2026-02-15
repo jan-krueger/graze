@@ -348,7 +348,7 @@ impl Widget for TableView<'_> {
 
         // Build per-column width overrides
         let overrides = &tab.viewport.col_width_overrides;
-        let default_max: u16 = 50;
+        let default_max: u16 = crate::ui::table_render::DEFAULT_MAX_COL_WIDTH;
 
         // For columns with positive override: set a minimum width so they actually expand.
         // For columns with negative override: cap reduces below default.

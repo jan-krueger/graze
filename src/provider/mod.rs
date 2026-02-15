@@ -1,7 +1,5 @@
 mod backend;
-mod csv;
-mod json;
-mod parquet;
+mod formats;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,9 +10,7 @@ use duckdb::arrow::record_batch::RecordBatch;
 
 use crate::event::SortState;
 
-pub use self::csv::CsvProvider;
-pub use self::json::JsonProvider;
-pub use self::parquet::ParquetProvider;
+use self::backend::DuckDbBackend;
 
 pub trait DataProvider: Send {
     fn name(&self) -> &str;
@@ -34,6 +30,57 @@ pub trait DataProvider: Send {
     }
 }
 
+pub struct FileProvider {
+    format_name: &'static str,
+    backend: DuckDbBackend,
+}
+
+impl DataProvider for FileProvider {
+    fn name(&self) -> &str {
+        self.format_name
+    }
+
+    fn table_name(&self) -> &str {
+        self.backend.table_name()
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.backend.schema()
+    }
+
+    fn total_rows(&self) -> usize {
+        self.backend.total_rows()
+    }
+
+    fn fetch_page(&self, offset: usize, limit: usize) -> Result<RecordBatch> {
+        self.backend.fetch_page(offset, limit)
+    }
+
+    fn apply_sort_state(&mut self, state: &SortState) -> Result<()> {
+        self.backend.apply_sort_state(state)
+    }
+
+    fn apply_filter(&mut self, filter: &str) -> Result<usize> {
+        self.backend.apply_filter(filter)
+    }
+
+    fn reset_filters(&mut self) -> Result<usize> {
+        self.backend.reset_filters()
+    }
+
+    fn execute_sql(&self, sql: &str) -> Result<RecordBatch> {
+        self.backend.execute_sql(sql)
+    }
+
+    fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>> {
+        self.backend.collect_match_rows(term, is_regex)
+    }
+
+    fn materialize_cache(&mut self) -> Result<()> {
+        self.backend.populate_cache()
+    }
+}
+
 pub fn create_provider(path: &Path) -> Result<Box<dyn DataProvider>> {
     let ext = path
         .extension()
@@ -42,9 +89,9 @@ pub fn create_provider(path: &Path) -> Result<Box<dyn DataProvider>> {
         .to_lowercase();
 
     match ext.as_str() {
-        "csv" | "tsv" => Ok(Box::new(CsvProvider::new(path)?)),
-        "parquet" => Ok(Box::new(ParquetProvider::new(path)?)),
-        "json" | "jsonl" | "ndjson" => Ok(Box::new(JsonProvider::new(path)?)),
+        "csv" | "tsv" => Ok(Box::new(formats::csv(path)?)),
+        "parquet" => Ok(Box::new(formats::parquet(path)?)),
+        "json" | "jsonl" | "ndjson" => Ok(Box::new(formats::json(path)?)),
         _ => anyhow::bail!("Unsupported file extension: .{ext}"),
     }
 }
@@ -58,9 +105,9 @@ pub fn create_provider_quick(path: &Path) -> Result<Box<dyn DataProvider>> {
         .to_lowercase();
 
     match ext.as_str() {
-        "csv" | "tsv" => Ok(Box::new(CsvProvider::new_quick(path)?)),
-        "parquet" => Ok(Box::new(ParquetProvider::new_quick(path)?)),
-        "json" | "jsonl" | "ndjson" => Ok(Box::new(JsonProvider::new_quick(path)?)),
+        "csv" | "tsv" => Ok(Box::new(formats::csv_quick(path)?)),
+        "parquet" => Ok(Box::new(formats::parquet_quick(path)?)),
+        "json" | "jsonl" | "ndjson" => Ok(Box::new(formats::json_quick(path)?)),
         _ => anyhow::bail!("Unsupported file extension: .{ext}"),
     }
 }

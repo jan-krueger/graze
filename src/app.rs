@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -6,6 +7,8 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event};
 use duckdb::arrow::array::Array;
+use duckdb::arrow::datatypes::Schema;
+use duckdb::arrow::record_batch::RecordBatch;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::DefaultTerminal;
@@ -337,16 +340,12 @@ impl App {
                 format!("{} [{}]{}", name, type_str, sort_ind)
             },
             (view_off, (view_off + visible_count).min(batch_rows)),
-            50,
+            crate::ui::table_render::DEFAULT_MAX_COL_WIDTH,
         );
 
-        let row_prefix_width = 3;
-        let gutter_width = if tab.data.total_rows == 0 {
-            2 // "0" + space
-        } else {
-            (tab.data.total_rows as f64).log10() as usize + 1 + 1
-        };
-        let left_margin = gutter_width + row_prefix_width;
+        let left_margin =
+            crate::ui::table_render::gutter_width(tab.data.total_rows)
+            + crate::ui::table_render::ROW_PREFIX_WIDTH;
         let hidden = &tab.hidden_columns;
         let cols = visible_columns(
             &col_widths,
@@ -471,156 +470,193 @@ impl App {
                 total_rows,
                 file_name,
                 table_name,
-            } => {
-                let tab = &mut self.tabs[tab_idx];
-                let num_cols = schema.fields().len();
-                tab.data.schema = Some(schema);
-                tab.data.total_rows = total_rows;
-                tab.data.file_name = Some(file_name);
-                tab.data.table_name = Some(table_name);
-                tab.fetch_pending = false;
-                if tab.hidden_columns.len() != num_cols {
-                    tab.hidden_columns = vec![false; num_cols];
-                }
-                if tab.viewport.col_width_overrides.len() != num_cols {
-                    tab.viewport.col_width_overrides = vec![0i16; num_cols];
-                }
-                if is_active {
-                    self.status_message = None;
-                }
-                self.request_buffer_around_for(tab_idx, 0);
-            }
+            } => self.on_file_loaded(tab_idx, is_active, schema, total_rows, file_name, table_name),
             DataEvent::PageLoaded {
                 offset,
                 batch,
                 total_rows,
-            } => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.data.buffer_offset = offset;
-                tab.data.current_batch = Some(batch);
-                tab.data.total_rows = total_rows;
-                tab.fetch_pending = false;
-                if is_active {
-                    self.try_resolve_search_column();
-                }
-            }
+            } => self.on_page_loaded(tab_idx, is_active, offset, batch, total_rows),
             DataEvent::MatchesCollected { rows } => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.search_pending = false;
-                let count = rows.len();
-                tab.search.match_count = Some(count);
-                tab.search.match_rows = rows;
-                if is_active {
-                    if count > 0 {
-                        self.status_message = Some(format!("{count} matches found"));
-                    } else {
-                        self.status_message = Some("No matches found".to_string());
-                    }
-                }
+                self.on_matches_collected(tab_idx, is_active, rows)
             }
-            DataEvent::SortApplied => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.fetch_pending = false;
-                tab.pending_search_col_find = None;
-                if is_active {
-                    self.status_message = None;
-                }
-                // Re-collect matches since row order changed.
-                self.refresh_search(tab_idx);
-            }
+            DataEvent::SortApplied => self.on_sort_applied(tab_idx, is_active),
             DataEvent::FilterApplied { total_rows } => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.data.total_rows = total_rows;
-                tab.viewport.selected_row = 0;
-                tab.viewport.view_start = 0;
-                tab.data.buffer_offset = 0;
-                tab.filter.active_filter = Some(tab.filter.input.clone());
-                tab.fetch_pending = false;
-                tab.pending_search_col_find = None;
-                if is_active {
-                    self.status_message =
-                        Some(format!("Filter applied: {total_rows} rows match"));
-                }
-                // Re-collect matches since filtered rows changed.
-                self.refresh_search(tab_idx);
+                self.on_filter_applied(tab_idx, is_active, total_rows)
             }
             DataEvent::FilterReset { total_rows } => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.data.total_rows = total_rows;
-                tab.viewport.selected_row = 0;
-                tab.viewport.view_start = 0;
-                tab.data.buffer_offset = 0;
-                tab.filter.active_filter = None;
-                tab.fetch_pending = false;
-                tab.pending_search_col_find = None;
-                if is_active {
-                    self.status_message = Some("Filter cleared".to_string());
-                }
-                // Re-collect matches since filtered rows changed.
-                self.refresh_search(tab_idx);
+                self.on_filter_reset(tab_idx, is_active, total_rows)
             }
             DataEvent::SqlResult {
                 batch,
                 schema,
-                ref sql,
-            } => {
-                if is_active {
-                    let is_summarize = sql
-                        .trim_start()
-                        .to_uppercase()
-                        .starts_with("SUMMARIZE");
-                    if is_summarize && self.mode == AppMode::Stats {
-                        let num_rows = batch.num_rows();
-                        self.stats.schema = Some(schema);
-                        self.stats.batch = Some(batch);
-                        self.stats.loading = false;
-                        self.status_message =
-                            Some(format!("Statistics: {num_rows} columns"));
-                    } else {
-                        let num_rows = batch.num_rows();
-                        self.sql.result_schema = Some(schema);
-                        self.sql.result = Some(batch);
-                        self.sql.error = None;
-                        self.status_message =
-                            Some(format!("SQL result: {num_rows} rows"));
-                    }
-                }
-            }
-            DataEvent::SqlError { ref error, ref sql } => {
-                if is_active {
-                    let is_summarize = sql
-                        .trim_start()
-                        .to_uppercase()
-                        .starts_with("SUMMARIZE");
-                    if is_summarize && self.mode == AppMode::Stats {
-                        self.stats.batch = None;
-                        self.stats.schema = None;
-                        self.stats.loading = false;
-                        self.status_message =
-                            Some(format!("Stats error: {error}"));
-                    } else {
-                        self.sql.result = None;
-                        self.sql.result_schema = None;
-                        self.sql.error = Some(error.clone());
-                        self.status_message =
-                            Some(format!("SQL error: {error}"));
-                    }
-                }
-            }
+                sql,
+            } => self.on_sql_result(is_active, batch, schema, &sql),
+            DataEvent::SqlError { error, sql } => self.on_sql_error(is_active, &error, &sql),
             DataEvent::Materialized { total_rows } => {
-                let tab = &mut self.tabs[tab_idx];
-                tab.data.total_rows = total_rows;
-                tab.fetch_pending = false;
-                if is_active {
-                    self.status_message = Some("Indexed".to_string());
-                }
+                self.on_materialized(tab_idx, is_active, total_rows)
             }
-            DataEvent::Error(msg) => {
-                self.tabs[tab_idx].fetch_pending = false;
-                if is_active {
-                    self.status_message = Some(format!("Error: {msg}"));
-                }
+            DataEvent::Error(msg) => self.on_error(tab_idx, is_active, msg),
+        }
+    }
+
+    fn on_file_loaded(
+        &mut self,
+        tab_idx: usize,
+        is_active: bool,
+        schema: Arc<Schema>,
+        total_rows: usize,
+        file_name: String,
+        table_name: String,
+    ) {
+        let tab = &mut self.tabs[tab_idx];
+        let num_cols = schema.fields().len();
+        tab.data.schema = Some(schema);
+        tab.data.total_rows = total_rows;
+        tab.data.file_name = Some(file_name);
+        tab.data.table_name = Some(table_name);
+        tab.fetch_pending = false;
+        if tab.hidden_columns.len() != num_cols {
+            tab.hidden_columns = vec![false; num_cols];
+        }
+        if tab.viewport.col_width_overrides.len() != num_cols {
+            tab.viewport.col_width_overrides = vec![0i16; num_cols];
+        }
+        if is_active {
+            self.status_message = None;
+        }
+        self.request_buffer_around_for(tab_idx, 0);
+    }
+
+    fn on_page_loaded(
+        &mut self,
+        tab_idx: usize,
+        is_active: bool,
+        offset: usize,
+        batch: RecordBatch,
+        total_rows: usize,
+    ) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.data.buffer_offset = offset;
+        tab.data.current_batch = Some(batch);
+        tab.data.total_rows = total_rows;
+        tab.fetch_pending = false;
+        if is_active {
+            self.try_resolve_search_column();
+        }
+    }
+
+    fn on_matches_collected(&mut self, tab_idx: usize, is_active: bool, rows: Vec<usize>) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.search_pending = false;
+        let count = rows.len();
+        tab.search.match_count = Some(count);
+        tab.search.match_rows = rows;
+        if is_active {
+            if count > 0 {
+                self.status_message = Some(format!("{count} matches found"));
+            } else {
+                self.status_message = Some("No matches found".to_string());
             }
+        }
+    }
+
+    fn on_sort_applied(&mut self, tab_idx: usize, is_active: bool) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.fetch_pending = false;
+        tab.pending_search_col_find = None;
+        if is_active {
+            self.status_message = None;
+        }
+        self.refresh_search(tab_idx);
+    }
+
+    fn on_filter_applied(&mut self, tab_idx: usize, is_active: bool, total_rows: usize) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.data.total_rows = total_rows;
+        tab.viewport.selected_row = 0;
+        tab.viewport.view_start = 0;
+        tab.data.buffer_offset = 0;
+        tab.filter.active_filter = Some(tab.filter.input.clone());
+        tab.fetch_pending = false;
+        tab.pending_search_col_find = None;
+        if is_active {
+            self.status_message = Some(format!("Filter applied: {total_rows} rows match"));
+        }
+        self.refresh_search(tab_idx);
+    }
+
+    fn on_filter_reset(&mut self, tab_idx: usize, is_active: bool, total_rows: usize) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.data.total_rows = total_rows;
+        tab.viewport.selected_row = 0;
+        tab.viewport.view_start = 0;
+        tab.data.buffer_offset = 0;
+        tab.filter.active_filter = None;
+        tab.fetch_pending = false;
+        tab.pending_search_col_find = None;
+        if is_active {
+            self.status_message = Some("Filter cleared".to_string());
+        }
+        self.refresh_search(tab_idx);
+    }
+
+    fn on_sql_result(
+        &mut self,
+        is_active: bool,
+        batch: RecordBatch,
+        schema: Arc<Schema>,
+        sql: &str,
+    ) {
+        if !is_active {
+            return;
+        }
+        let is_summarize = sql.trim_start().to_uppercase().starts_with("SUMMARIZE");
+        if is_summarize && self.mode == AppMode::Stats {
+            let num_rows = batch.num_rows();
+            self.stats.schema = Some(schema);
+            self.stats.batch = Some(batch);
+            self.stats.loading = false;
+            self.status_message = Some(format!("Statistics: {num_rows} columns"));
+        } else {
+            let num_rows = batch.num_rows();
+            self.sql.result_schema = Some(schema);
+            self.sql.result = Some(batch);
+            self.sql.error = None;
+            self.status_message = Some(format!("SQL result: {num_rows} rows"));
+        }
+    }
+
+    fn on_sql_error(&mut self, is_active: bool, error: &str, sql: &str) {
+        if !is_active {
+            return;
+        }
+        let is_summarize = sql.trim_start().to_uppercase().starts_with("SUMMARIZE");
+        if is_summarize && self.mode == AppMode::Stats {
+            self.stats.batch = None;
+            self.stats.schema = None;
+            self.stats.loading = false;
+            self.status_message = Some(format!("Stats error: {error}"));
+        } else {
+            self.sql.result = None;
+            self.sql.result_schema = None;
+            self.sql.error = Some(error.to_string());
+            self.status_message = Some(format!("SQL error: {error}"));
+        }
+    }
+
+    fn on_materialized(&mut self, tab_idx: usize, is_active: bool, total_rows: usize) {
+        let tab = &mut self.tabs[tab_idx];
+        tab.data.total_rows = total_rows;
+        tab.fetch_pending = false;
+        if is_active {
+            self.status_message = Some("Indexed".to_string());
+        }
+    }
+
+    fn on_error(&mut self, tab_idx: usize, is_active: bool, msg: String) {
+        self.tabs[tab_idx].fetch_pending = false;
+        if is_active {
+            self.status_message = Some(format!("Error: {msg}"));
         }
     }
 
