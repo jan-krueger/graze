@@ -22,6 +22,18 @@ impl CsvProvider {
         let backend = DuckDbBackend::new(conn, &load_sql, "csv_data")?;
         Ok(Self { backend })
     }
+
+    /// Create a VIEW-based provider for instant startup (no row count).
+    pub fn new_quick(path: &Path) -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let path_str = path.to_string_lossy();
+        // Use small sample_size so type inference is near-instant on large files.
+        let load_sql = format!(
+            "CREATE VIEW csv_data AS SELECT * FROM read_csv_auto('{path_str}', sample_size=100)"
+        );
+        let backend = DuckDbBackend::new_without_count(conn, &load_sql, "csv_data")?;
+        Ok(Self { backend })
+    }
 }
 
 impl DataProvider for CsvProvider {
@@ -61,21 +73,11 @@ impl DataProvider for CsvProvider {
         self.backend.execute_sql(sql)
     }
 
-    fn find_match_row(
-        &self,
-        term: &str,
-        current_row: usize,
-        forward: bool,
-        is_regex: bool,
-    ) -> Result<Option<usize>> {
-        self.backend.find_match_row(term, current_row, forward, is_regex)
+    fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>> {
+        self.backend.collect_match_rows(term, is_regex)
     }
 
-    fn count_matches(&self, term: &str, is_regex: bool) -> Result<usize> {
-        self.backend.count_matches(term, is_regex)
-    }
-
-    fn match_index_at(&self, term: &str, row: usize, is_regex: bool) -> Result<usize> {
-        self.backend.match_index_at(term, row, is_regex)
+    fn materialize_cache(&mut self) -> Result<()> {
+        self.backend.populate_cache()
     }
 }

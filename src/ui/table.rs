@@ -4,6 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::App;
+use crate::search::SearchMatcher;
 use crate::state::{SearchMode, SelectionMode};
 use crate::ui::table_render::{UnifiedTable, TableStyler};
 
@@ -170,33 +171,11 @@ fn like_match(text: &[u8], pattern: &[u8]) -> bool {
     p == pattern.len()
 }
 
-enum SearchMatcher {
-    Plain(String),
-    Regex(regex::Regex),
-}
-
-impl SearchMatcher {
-    fn from_search_state(app: &App) -> Option<Self> {
-        let tab = app.tab();
-        let term = tab.search.active_search.as_ref()?;
-        match tab.search.search_mode {
-            SearchMode::Regex => {
-                let re = regex::RegexBuilder::new(term)
-                    .case_insensitive(true)
-                    .build()
-                    .ok()?;
-                Some(SearchMatcher::Regex(re))
-            }
-            SearchMode::Plain => Some(SearchMatcher::Plain(term.to_lowercase())),
-        }
-    }
-
-    fn is_match(&self, val: &str) -> bool {
-        match self {
-            SearchMatcher::Plain(term) => val.to_lowercase().contains(term.as_str()),
-            SearchMatcher::Regex(re) => re.is_match(val),
-        }
-    }
+fn search_matcher_from_app(app: &App) -> Option<SearchMatcher> {
+    let tab = app.tab();
+    let term = tab.search.active_search.as_ref()?;
+    let is_regex = tab.search.search_mode == SearchMode::Regex;
+    SearchMatcher::new(term, is_regex)
 }
 
 /// Styler for the normal table view: row/column selection, search highlighting, filter highlighting.
@@ -314,6 +293,25 @@ impl Widget for TableView<'_> {
             return;
         }
 
+        // If the viewport is completely outside the buffer, show a loading indicator
+        // instead of stale/empty data while the async fetch is in flight.
+        let buf_end = tab.data.buffer_offset + batch.num_rows();
+        let view_end = tab.viewport.view_start + tab.viewport.page_size;
+        if tab.viewport.view_start >= buf_end || view_end <= tab.data.buffer_offset {
+            let msg = " Loading... ";
+            let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
+            let y = area.y + area.height / 2;
+            buf.set_string(
+                x,
+                y,
+                msg,
+                ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::DarkGray)
+                    .add_modifier(ratatui::style::Modifier::ITALIC),
+            );
+            return;
+        }
+
         let view_off = self.app.view_offset_in_buffer();
 
         let col_select_active = tab.viewport.selection_mode == SelectionMode::Column;
@@ -332,7 +330,7 @@ impl Widget for TableView<'_> {
                 .position(|f| f.name().eq_ignore_ascii_case(&sf.column))
         });
 
-        let search_matcher = SearchMatcher::from_search_state(self.app);
+        let search_matcher = search_matcher_from_app(self.app);
 
         let selected_data_row = tab
             .viewport
@@ -378,7 +376,8 @@ impl Widget for TableView<'_> {
             .column_offset(tab.viewport.column_offset)
             .sort_state(&tab.data.sort_state)
             .max_col_width(global_max)
-            .col_width_caps(&col_caps);
+            .col_width_caps(&col_caps)
+            .row_numbers(tab.data.buffer_offset, tab.data.total_rows);
 
         if !col_mins.is_empty() {
             table = table.col_width_mins(&col_mins);

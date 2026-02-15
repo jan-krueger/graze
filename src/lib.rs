@@ -4,6 +4,7 @@ pub mod event;
 mod handlers;
 mod keybindings;
 pub mod provider;
+pub mod search;
 pub mod state;
 pub mod ui;
 pub mod worker;

@@ -63,10 +63,14 @@ impl Widget for StatusBar<'_> {
         }
 
         // Position info
-        if tab.data.total_rows > 0 {
+        {
             let pos = self.app.absolute_row() + 1;
             let total = tab.data.total_rows;
-            let pos_str = format!(" {pos}/{total} ");
+            let pos_str = if total == 0 {
+                format!(" {pos}/? ")
+            } else {
+                format!(" {pos}/{total} ")
+            };
             buf.set_string(x, area.y, &pos_str, bg_style);
             x += pos_str.len() as u16;
         }
@@ -93,14 +97,18 @@ impl Widget for StatusBar<'_> {
                 SearchMode::Regex => ("Regex", Color::Magenta),
                 SearchMode::Plain => ("Search", Color::Yellow),
             };
-            let search_str = match (tab.search.match_index, tab.search.match_count) {
-                (Some(idx), Some(total)) => {
-                    format!(" [{}: {} ({}/{} matches)] ", label, search, idx, total)
+            let search_str = if tab.search_pending {
+                format!(" [{}: {} (searching...)] ", label, search)
+            } else {
+                match (tab.search.match_index, tab.search.match_count) {
+                    (Some(idx), Some(total)) => {
+                        format!(" [{}: {} ({}/{} matches)] ", label, search, idx, total)
+                    }
+                    (None, Some(total)) => {
+                        format!(" [{}: {} ({} matches)] ", label, search, total)
+                    }
+                    _ => format!(" [{}: {}] ", label, search),
                 }
-                (None, Some(total)) => {
-                    format!(" [{}: {} ({} matches)] ", label, search, total)
-                }
-                _ => format!(" [{}: {}] ", label, search),
             };
             let search_style = bg_style.fg(color);
             buf.set_string(x, area.y, &search_str, search_style);

@@ -26,7 +26,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             let input = app.tab().filter.input.clone();
             if let Ok(row_num) = input.parse::<usize>() {
                 let total = app.tab().data.total_rows;
-                if row_num >= 1 && row_num <= total {
+                if row_num >= 1 && (total == 0 || row_num <= total) {
                     app.tab_mut().viewport.selected_row = row_num - 1;
                     app.tab_mut().viewport.adjust_view();
                     app.ensure_buffer();

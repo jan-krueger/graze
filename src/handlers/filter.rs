@@ -22,7 +22,9 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         tab.search.active_search = Some(input.clone());
                         tab.search.match_count = None;
                         tab.search.match_index = None;
-                        app.send_action(Action::CountMatches {
+                        tab.search.match_rows.clear();
+                        tab.search_pending = true;
+                        app.send_action(Action::CollectMatches {
                             term: input,
                             is_regex: true,
                         });
@@ -34,7 +36,9 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         tab.search.active_search = Some(input.clone());
                         tab.search.match_count = None;
                         tab.search.match_index = None;
-                        app.send_action(Action::CountMatches {
+                        tab.search.match_rows.clear();
+                        tab.search_pending = true;
+                        app.send_action(Action::CollectMatches {
                             term: input,
                             is_regex: false,
                         });

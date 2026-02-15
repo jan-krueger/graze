@@ -42,8 +42,9 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             app.ensure_buffer();
         }
         KeyCode::Char('G') => {
-            if app.tab().data.total_rows > 0 {
-                app.tab_mut().viewport.selected_row = app.tab().data.total_rows - 1;
+            let total = app.tab().data.total_rows;
+            if total > 0 {
+                app.tab_mut().viewport.selected_row = total - 1;
                 app.tab_mut().viewport.adjust_view();
                 app.ensure_buffer();
             }
@@ -162,6 +163,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 tab.search.active_search = None;
                 tab.search.match_count = None;
                 tab.search.match_index = None;
+                tab.search.match_rows.clear();
             }
             if had_filter {
                 app.send_action(Action::ResetFilter);

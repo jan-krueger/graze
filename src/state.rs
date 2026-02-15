@@ -64,9 +64,11 @@ impl Viewport {
 
     pub fn move_cursor_down(&mut self, n: usize, total_rows: usize) {
         if total_rows == 0 {
-            return;
+            // Unknown total (VIEW phase) — allow scrolling without clamping.
+            self.selected_row += n;
+        } else {
+            self.selected_row = (self.selected_row + n).min(total_rows - 1);
         }
-        self.selected_row = (self.selected_row + n).min(total_rows - 1);
         self.adjust_view();
     }
 
@@ -181,6 +183,8 @@ pub struct SearchState {
     pub search_mode: SearchMode,
     pub match_count: Option<usize>,
     pub match_index: Option<usize>,
+    /// Cached list of all matching row indices (sorted ascending).
+    pub match_rows: Vec<usize>,
 }
 
 impl SearchState {
@@ -190,6 +194,53 @@ impl SearchState {
             search_mode: SearchMode::Plain,
             match_count: None,
             match_index: None,
+            match_rows: Vec::new(),
+        }
+    }
+
+    /// Find the next match after `current_row` (wraps around).
+    pub fn next_match(&self, current_row: usize) -> Option<(usize, usize)> {
+        if self.match_rows.is_empty() {
+            return None;
+        }
+        // Find first row > current_row
+        match self.match_rows.binary_search(&(current_row + 1)) {
+            Ok(idx) => Some((idx, self.match_rows[idx])),
+            Err(idx) => {
+                if idx < self.match_rows.len() {
+                    Some((idx, self.match_rows[idx]))
+                } else {
+                    // Wrap to beginning
+                    Some((0, self.match_rows[0]))
+                }
+            }
+        }
+    }
+
+    /// Find the previous match before `current_row` (wraps around).
+    pub fn prev_match(&self, current_row: usize) -> Option<(usize, usize)> {
+        if self.match_rows.is_empty() {
+            return None;
+        }
+        // Find last row < current_row
+        match self.match_rows.binary_search(&current_row) {
+            Ok(idx) => {
+                if idx > 0 {
+                    Some((idx - 1, self.match_rows[idx - 1]))
+                } else {
+                    // Wrap to end
+                    let last = self.match_rows.len() - 1;
+                    Some((last, self.match_rows[last]))
+                }
+            }
+            Err(idx) => {
+                if idx > 0 {
+                    Some((idx - 1, self.match_rows[idx - 1]))
+                } else {
+                    let last = self.match_rows.len() - 1;
+                    Some((last, self.match_rows[last]))
+                }
+            }
         }
     }
 }

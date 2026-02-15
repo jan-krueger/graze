@@ -122,13 +122,7 @@ pub enum Action {
     Filter(String),
     ResetFilter,
     ExecuteSql(String),
-    FindMatch {
-        term: String,
-        current_row: usize,
-        forward: bool,
-        is_regex: bool,
-    },
-    CountMatches {
+    CollectMatches {
         term: String,
         is_regex: bool,
     },
@@ -164,9 +158,8 @@ pub enum DataEvent {
         error: String,
         sql: String,
     },
-    MatchFound { row: usize, match_index: Option<usize> },
-    MatchNotFound,
-    MatchCount { count: usize },
+    Materialized { total_rows: usize },
+    MatchesCollected { rows: Vec<usize> },
     Error(String),
 }
 

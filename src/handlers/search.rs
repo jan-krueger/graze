@@ -1,45 +1,31 @@
 use crate::app::App;
-use crate::event::Action;
-use crate::state::SearchMode;
 
-/// Jump to the next cell containing the active search term (full dataset).
+/// Jump to the next match using the cached match_rows list (instant).
 pub(crate) fn jump_to_next_match(app: &mut App) {
-    if app.tab().search_pending {
-        return;
-    }
-    let term = match app.tab().search.active_search.as_ref() {
-        Some(t) => t.clone(),
-        None => return,
-    };
-    let is_regex = app.tab().search.search_mode == SearchMode::Regex;
-    app.tab_mut().search_pending = true;
-    app.status_message = Some("Searching...".to_string());
     let current_row = app.tab().viewport.selected_row;
-    app.send_action(Action::FindMatch {
-        term,
-        current_row,
-        forward: true,
-        is_regex,
-    });
+    let result = app.tab().search.next_match(current_row);
+    if let Some((idx, row)) = result {
+        app.tab_mut().search.match_index = Some(idx + 1);
+        app.tab_mut().viewport.selected_row = row;
+        app.tab_mut().viewport.adjust_view();
+        app.ensure_buffer();
+        app.status_message = Some(format!("Match at row {}", row + 1));
+    } else {
+        app.status_message = Some("No match found".to_string());
+    }
 }
 
-/// Jump to the previous cell containing the active search term (full dataset).
+/// Jump to the previous match using the cached match_rows list (instant).
 pub(crate) fn jump_to_prev_match(app: &mut App) {
-    if app.tab().search_pending {
-        return;
-    }
-    let term = match app.tab().search.active_search.as_ref() {
-        Some(t) => t.clone(),
-        None => return,
-    };
-    let is_regex = app.tab().search.search_mode == SearchMode::Regex;
-    app.tab_mut().search_pending = true;
-    app.status_message = Some("Searching...".to_string());
     let current_row = app.tab().viewport.selected_row;
-    app.send_action(Action::FindMatch {
-        term,
-        current_row,
-        forward: false,
-        is_regex,
-    });
+    let result = app.tab().search.prev_match(current_row);
+    if let Some((idx, row)) = result {
+        app.tab_mut().search.match_index = Some(idx + 1);
+        app.tab_mut().viewport.selected_row = row;
+        app.tab_mut().viewport.adjust_view();
+        app.ensure_buffer();
+        app.status_message = Some(format!("Match at row {}", row + 1));
+    } else {
+        app.status_message = Some("No match found".to_string());
+    }
 }

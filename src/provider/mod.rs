@@ -26,15 +26,12 @@ pub trait DataProvider: Send {
     fn apply_filter(&mut self, filter: &str) -> Result<usize>;
     fn reset_filters(&mut self) -> Result<usize>;
     fn execute_sql(&self, sql: &str) -> Result<RecordBatch>;
-    fn find_match_row(
-        &self,
-        term: &str,
-        current_row: usize,
-        forward: bool,
-        is_regex: bool,
-    ) -> Result<Option<usize>>;
-    fn count_matches(&self, term: &str, is_regex: bool) -> Result<usize>;
-    fn match_index_at(&self, term: &str, row: usize, is_regex: bool) -> Result<usize>;
+    fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>>;
+
+    /// Populate the Arrow cache after TABLE materialization. No-op by default.
+    fn materialize_cache(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn create_provider(path: &Path) -> Result<Box<dyn DataProvider>> {
@@ -48,6 +45,22 @@ pub fn create_provider(path: &Path) -> Result<Box<dyn DataProvider>> {
         "csv" | "tsv" => Ok(Box::new(CsvProvider::new(path)?)),
         "parquet" => Ok(Box::new(ParquetProvider::new(path)?)),
         "json" | "jsonl" | "ndjson" => Ok(Box::new(JsonProvider::new(path)?)),
+        _ => anyhow::bail!("Unsupported file extension: .{ext}"),
+    }
+}
+
+/// Create a VIEW-based provider for instant startup (queries hit the raw file).
+pub fn create_provider_quick(path: &Path) -> Result<Box<dyn DataProvider>> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "csv" | "tsv" => Ok(Box::new(CsvProvider::new_quick(path)?)),
+        "parquet" => Ok(Box::new(ParquetProvider::new_quick(path)?)),
+        "json" | "jsonl" | "ndjson" => Ok(Box::new(JsonProvider::new_quick(path)?)),
         _ => anyhow::bail!("Unsupported file extension: .{ext}"),
     }
 }

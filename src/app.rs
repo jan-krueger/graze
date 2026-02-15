@@ -14,7 +14,7 @@ use crate::diff::DiffResult;
 use crate::event::{Action, DataEvent, TermEvent};
 use crate::ui::sql_pad::SQL_PAD_HEIGHT;
 use crate::state::{
-    DiffState, SearchMode, SqlState, StatsState, TabState,
+    DiffState, SqlState, StatsState, TabState,
 };
 use crate::ui::AppView;
 use crate::worker::Worker;
@@ -341,12 +341,18 @@ impl App {
         );
 
         let row_prefix_width = 3;
+        let gutter_width = if tab.data.total_rows == 0 {
+            2 // "0" + space
+        } else {
+            (tab.data.total_rows as f64).log10() as usize + 1 + 1
+        };
+        let left_margin = gutter_width + row_prefix_width;
         let hidden = &tab.hidden_columns;
         let cols = visible_columns(
             &col_widths,
             tab.viewport.terminal_width as usize,
             tab.viewport.column_offset,
-            row_prefix_width,
+            left_margin,
             if hidden.is_empty() { None } else { Some(hidden) },
         );
 
@@ -498,42 +504,29 @@ impl App {
                     self.try_resolve_search_column();
                 }
             }
-            DataEvent::MatchFound { row, match_index } => {
+            DataEvent::MatchesCollected { rows } => {
                 let tab = &mut self.tabs[tab_idx];
                 tab.search_pending = false;
-                tab.search.match_index = match_index;
-                tab.viewport.selected_row = row;
-                tab.viewport.adjust_view();
-
-                if let Some(ref term) = tab.search.active_search {
-                    let is_regex = tab.search.search_mode == SearchMode::Regex;
-                    tab.pending_search_col_find =
-                        Some((row, term.clone(), is_regex));
-                }
-
+                let count = rows.len();
+                tab.search.match_count = Some(count);
+                tab.search.match_rows = rows;
                 if is_active {
-                    self.ensure_buffer();
-                    self.try_resolve_search_column();
-                    self.status_message = Some(format!("Match at row {}", row + 1));
+                    if count > 0 {
+                        self.status_message = Some(format!("{count} matches found"));
+                    } else {
+                        self.status_message = Some("No matches found".to_string());
+                    }
                 }
-            }
-            DataEvent::MatchNotFound => {
-                self.tabs[tab_idx].search_pending = false;
-                if is_active {
-                    self.status_message = Some("No match found".to_string());
-                }
-            }
-            DataEvent::MatchCount { count } => {
-                self.tabs[tab_idx].search.match_count = Some(count);
             }
             DataEvent::SortApplied => {
                 let tab = &mut self.tabs[tab_idx];
                 tab.fetch_pending = false;
-                tab.search_pending = false;
                 tab.pending_search_col_find = None;
                 if is_active {
                     self.status_message = None;
                 }
+                // Re-collect matches since row order changed.
+                self.refresh_search(tab_idx);
             }
             DataEvent::FilterApplied { total_rows } => {
                 let tab = &mut self.tabs[tab_idx];
@@ -543,12 +536,13 @@ impl App {
                 tab.data.buffer_offset = 0;
                 tab.filter.active_filter = Some(tab.filter.input.clone());
                 tab.fetch_pending = false;
-                tab.search_pending = false;
                 tab.pending_search_col_find = None;
                 if is_active {
                     self.status_message =
                         Some(format!("Filter applied: {total_rows} rows match"));
                 }
+                // Re-collect matches since filtered rows changed.
+                self.refresh_search(tab_idx);
             }
             DataEvent::FilterReset { total_rows } => {
                 let tab = &mut self.tabs[tab_idx];
@@ -558,11 +552,12 @@ impl App {
                 tab.data.buffer_offset = 0;
                 tab.filter.active_filter = None;
                 tab.fetch_pending = false;
-                tab.search_pending = false;
                 tab.pending_search_col_find = None;
                 if is_active {
                     self.status_message = Some("Filter cleared".to_string());
                 }
+                // Re-collect matches since filtered rows changed.
+                self.refresh_search(tab_idx);
             }
             DataEvent::SqlResult {
                 batch,
@@ -610,6 +605,14 @@ impl App {
                         self.status_message =
                             Some(format!("SQL error: {error}"));
                     }
+                }
+            }
+            DataEvent::Materialized { total_rows } => {
+                let tab = &mut self.tabs[tab_idx];
+                tab.data.total_rows = total_rows;
+                tab.fetch_pending = false;
+                if is_active {
+                    self.status_message = Some("Indexed".to_string());
                 }
             }
             DataEvent::Error(msg) => {
@@ -670,6 +673,22 @@ impl App {
             offset: new_offset,
             limit: fetch_size,
         });
+    }
+
+    /// Re-collect search matches if there's an active search (after sort/filter change).
+    fn refresh_search(&mut self, tab_idx: usize) {
+        let tab = &mut self.tabs[tab_idx];
+        if let Some(ref term) = tab.search.active_search {
+            let term = term.clone();
+            let is_regex = tab.search.search_mode == crate::state::SearchMode::Regex;
+            tab.search.match_rows.clear();
+            tab.search.match_count = None;
+            tab.search.match_index = None;
+            tab.search_pending = true;
+            self.send_action(Action::CollectMatches { term, is_regex });
+        } else {
+            tab.search_pending = false;
+        }
     }
 
     fn try_resolve_search_column(&mut self) {

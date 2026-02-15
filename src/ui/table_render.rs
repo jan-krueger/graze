@@ -248,6 +248,9 @@ pub struct UnifiedTable<'a> {
     hidden: Option<&'a [bool]>,
     /// Optional per-column max width caps.
     col_width_caps: Option<&'a [u16]>,
+    /// When set, render 1-based row numbers in a left gutter.
+    /// Value is (absolute_row_of_first_batch_row, total_rows) for width calculation.
+    row_numbers: Option<(usize, usize)>,
 }
 
 impl<'a> UnifiedTable<'a> {
@@ -269,6 +272,7 @@ impl<'a> UnifiedTable<'a> {
             col_width_mins: None,
             hidden: None,
             col_width_caps: None,
+            row_numbers: None,
         }
     }
 
@@ -319,6 +323,14 @@ impl<'a> UnifiedTable<'a> {
         self.col_width_caps = Some(caps);
         self
     }
+
+    /// Enable row numbers in a left gutter.
+    /// `base` is the absolute 0-based row index of the first row in the batch.
+    /// `total_rows` is the total dataset size (used to determine gutter width).
+    pub fn row_numbers(mut self, base: usize, total_rows: usize) -> Self {
+        self.row_numbers = Some((base, total_rows));
+        self
+    }
 }
 
 impl Widget for UnifiedTable<'_> {
@@ -348,6 +360,16 @@ impl Widget for UnifiedTable<'_> {
         } else {
             Box::new(|_i, name: &str, _type_str: &str| name.to_string())
         };
+
+        // Row number gutter width (0 when disabled).
+        let (gutter_width, row_num_base) = if let Some((base, total)) = self.row_numbers {
+            // Width = digits needed for max row number (1-based) + 1 space separator
+            let digits = if total == 0 { 1 } else { ((total) as f64).log10() as usize + 1 };
+            (digits + 1, base)
+        } else {
+            (0, 0)
+        };
+        let effective_left_margin = gutter_width + self.left_margin;
 
         let data_area_height = (area.height as usize).saturating_sub(1); // minus header row
         let sample_end = (self.scroll_offset + data_area_height).min(batch_rows);
@@ -383,13 +405,16 @@ impl Widget for UnifiedTable<'_> {
             &col_widths,
             area.width as usize,
             self.column_offset,
-            self.left_margin,
+            effective_left_margin,
             self.hidden,
         );
 
         if visible_cols.is_empty() {
             return;
         }
+
+        let gutter_style = Style::default().fg(Color::DarkGray);
+        let num_col_width = gutter_width.saturating_sub(1); // digits only, no separator
 
         // --- Render header row ---
         let header_y = area.y;
@@ -404,7 +429,7 @@ impl Widget for UnifiedTable<'_> {
             Style::default(),
         );
 
-        let mut x = area.x + self.left_margin as u16;
+        let mut x = area.x + effective_left_margin as u16;
 
         for &col_idx in &visible_cols {
             let field = &fields[col_idx];
@@ -489,12 +514,25 @@ impl Widget for UnifiedTable<'_> {
                 row_bg,
             );
 
-            // Row prefix
+            // Row number gutter
+            if self.row_numbers.is_some() {
+                let abs_row = row_num_base + data_row + 1; // 1-based
+                let num_str = format!("{:>width$} ", abs_row, width = num_col_width);
+                // Use the row background to detect selection and pick a readable color
+                let num_style = if row_bg.bg == Some(Color::DarkGray) {
+                    row_bg.fg(Color::Yellow)
+                } else {
+                    gutter_style
+                };
+                buf.set_string(area.x, row_y, &num_str, num_style);
+            }
+
+            // Row prefix (e.g. ">> " for selected row)
             let (prefix, prefix_style) = self.styler.row_prefix(data_row);
-            buf.set_string(area.x, row_y, prefix, prefix_style);
+            buf.set_string(area.x + gutter_width as u16, row_y, prefix, prefix_style);
 
             // Cells
-            let mut x = area.x + self.left_margin as u16;
+            let mut x = area.x + effective_left_margin as u16;
             for &col_idx in &visible_cols {
                 let width = col_widths[col_idx] as usize;
                 let column = self.batch.column(col_idx);
