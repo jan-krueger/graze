@@ -37,6 +37,7 @@ pub enum AppMode {
     Diff,
     GoToRow,
     ColumnHide,
+    Help,
     Quitting,
 }
 
@@ -54,6 +55,7 @@ impl AppMode {
             AppMode::Diff => " DIFF ",
             AppMode::GoToRow => " GOTO ",
             AppMode::ColumnHide => " COLS ",
+            AppMode::Help => " HELP ",
             AppMode::Quitting => " QUIT ",
         }
     }
@@ -104,6 +106,10 @@ impl AppMode {
                 .bg(Color::Cyan)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
+            AppMode::Help => Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
             AppMode::Quitting => Style::default()
                 .bg(Color::Red)
                 .fg(Color::White)
@@ -114,7 +120,7 @@ impl AppMode {
     pub fn hints(&self) -> &'static [(&'static str, &'static str)] {
         match self {
             AppMode::Normal => &[
-                ("Tab", "mode"),
+                ("?", "help"),
                 ("q", "quit"),
                 ("/", "search"),
                 ("f", "filter"),
@@ -141,9 +147,10 @@ impl AppMode {
             AppMode::Diff => &[
                 ("n", "next"),
                 ("N", "prev"),
-                ("h/l", "scroll"),
+                ("c", "changes"),
                 ("Esc", "close"),
             ],
+            AppMode::Help => &[("Esc", "close")],
             AppMode::Quitting => &[],
         }
     }
@@ -173,7 +180,7 @@ impl AppMode {
                 Constraint::Length(1),
                 Constraint::Length(1),
             ],
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide | AppMode::Diff => {
+            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide | AppMode::Diff | AppMode::Help => {
                 vec![Constraint::Min(3), Constraint::Length(1)]
             }
             _ => vec![Constraint::Min(3), Constraint::Length(1)],
@@ -207,6 +214,8 @@ impl AppMode {
     }
 }
 
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 pub struct App {
     pub mode: AppMode,
     pub tabs: Vec<TabState>,
@@ -215,10 +224,17 @@ pub struct App {
     pub stats: StatsState,
     pub diff: DiffState,
     pub status_message: Option<String>,
+    pub tick: usize,
     action_txs: Vec<Sender<Action>>,
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
     diff_rx: Option<Receiver<DiffResult>>,
+}
+
+impl App {
+    pub fn spinner_char(&self) -> char {
+        SPINNER_FRAMES[self.tick % SPINNER_FRAMES.len()]
+    }
 }
 
 impl App {
@@ -258,6 +274,7 @@ impl App {
             stats: StatsState::new(),
             diff: DiffState::new(),
             status_message: Some("Loading...".to_string()),
+            tick: 0,
             action_txs,
             data_rxs,
             term_rx,
@@ -447,7 +464,9 @@ impl App {
                     let row = self.tab().viewport.selected_row;
                     self.request_buffer_around(row);
                 }
-                Ok(TermEvent::Tick) | Err(_) => {}
+                Ok(TermEvent::Tick) | Err(_) => {
+                    self.tick += 1;
+                }
             }
         }
 
@@ -909,6 +928,7 @@ impl App {
                 self.diff.changed_cells = dr.changed_cells;
                 self.diff.schema = Some(dr.schema);
                 self.diff.batch = Some(dr.batch);
+                self.diff.rebuild_visible_rows();
                 let c = &self.diff.counts;
                 self.status_message = Some(format!(
                     "+{} -{} ~{} ={}",

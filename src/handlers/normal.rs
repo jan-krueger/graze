@@ -243,6 +243,11 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
 
+        // Help
+        KeyCode::Char('?') => {
+            app.mode = AppMode::Help;
+        }
+
         // Tab switching
         KeyCode::Char(']') => {
             if app.has_tabs() {

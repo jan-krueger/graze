@@ -1,0 +1,113 @@
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
+
+const BORDER_STYLE: Style = Style::new().fg(Color::Cyan);
+const TITLE_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const DIM_STYLE: Style = Style::new().fg(Color::DarkGray);
+
+/// A centered popup frame with title, footer, and bordered content area.
+///
+/// Usage:
+/// ```ignore
+/// let popup = Popup::new("Title", "footer text", content_width, content_height);
+/// let inner = popup.render_frame(area, buf);
+/// // render your content into `inner` — each row already has borders on both sides
+/// ```
+pub struct Popup<'a> {
+    title: &'a str,
+    footer: &'a str,
+    inner_width: usize,
+    inner_height: usize,
+}
+
+impl<'a> Popup<'a> {
+    pub fn new(
+        title: &'a str,
+        footer: &'a str,
+        inner_width: usize,
+        inner_height: usize,
+    ) -> Self {
+        Self {
+            title,
+            footer,
+            inner_width,
+            inner_height,
+        }
+    }
+
+    /// Render the popup frame (clear background, borders, title, footer).
+    ///
+    /// Returns the inner `Rect` where content should be rendered.
+    /// The inner rect has width = `inner_width` and is positioned inside the borders.
+    /// Callers should use `render_row()` to draw individual content rows with side borders.
+    pub fn render_frame(&self, area: Rect, buf: &mut Buffer) -> Rect {
+        let popup_width = self
+            .inner_width
+            .max(self.title.width() + 4)
+            .max(self.footer.width() + 4)
+            .min(area.width as usize - 2);
+
+        let max_content_height = (area.height as usize).saturating_sub(4);
+        let content_height = self.inner_height.min(max_content_height).max(1);
+        let popup_height = content_height + 4; // top border + blank + content + blank/footer
+
+        let popup_x = area.x + (area.width.saturating_sub(popup_width as u16 + 2)) / 2;
+        let popup_y = area.y + (area.height.saturating_sub(popup_height as u16)) / 2;
+
+        // Clear background
+        let clear_width = (popup_width + 2).min(area.width as usize);
+        for row in 0..popup_height as u16 {
+            let y = popup_y + row;
+            if y < area.y + area.height {
+                buf.set_string(popup_x, y, &" ".repeat(clear_width), Style::default());
+            }
+        }
+
+        // Top border: ┌─ Title ───┐
+        let top_border = format!(
+            "\u{250c}\u{2500} {} {}\u{2510}",
+            self.title,
+            "\u{2500}".repeat(popup_width.saturating_sub(self.title.width() + 4))
+        );
+        buf.set_string(popup_x, popup_y, &top_border, BORDER_STYLE);
+        buf.set_string(popup_x + 3, popup_y, self.title, TITLE_STYLE);
+
+        // Blank line after title
+        let bordered_blank = format!("\u{2502}{}\u{2502}", " ".repeat(popup_width));
+        buf.set_string(popup_x, popup_y + 1, &bordered_blank, BORDER_STYLE);
+
+        // Content rows get side borders
+        for i in 0..content_height {
+            let y = popup_y + 2 + i as u16;
+            buf.set_string(popup_x, y, "\u{2502}", BORDER_STYLE);
+            let right_x = popup_x + popup_width as u16 + 1;
+            if right_x < area.x + area.width {
+                buf.set_string(right_x, y, "\u{2502}", BORDER_STYLE);
+            }
+        }
+
+        // Blank line before footer
+        let footer_blank_y = popup_y + 2 + content_height as u16;
+        buf.set_string(popup_x, footer_blank_y, &bordered_blank, BORDER_STYLE);
+
+        // Bottom border: └ footer ───┘
+        let bottom_y = footer_blank_y + 1;
+        let footer_padded = format!(
+            "\u{2514} {} {}\u{2518}",
+            self.footer,
+            "\u{2500}".repeat(popup_width.saturating_sub(self.footer.width() + 3))
+        );
+        buf.set_string(popup_x, bottom_y, &footer_padded, BORDER_STYLE);
+        buf.set_string(popup_x + 2, bottom_y, self.footer, DIM_STYLE);
+
+        // Return inner content rect (inside the borders, below the blank line)
+        Rect {
+            x: popup_x + 1,
+            y: popup_y + 2,
+            width: popup_width as u16,
+            height: content_height as u16,
+        }
+    }
+}

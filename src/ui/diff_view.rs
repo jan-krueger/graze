@@ -1,3 +1,4 @@
+use duckdb::arrow::compute::concat_batches;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -145,7 +146,9 @@ impl Widget for DiffView<'_> {
         );
 
         if diff.loading {
-            buf.set_string(area.x + 1, header_y, "Computing diff...", header_style);
+            let spinner = self.app.spinner_char();
+            let msg = format!("{} Computing diff...", spinner);
+            buf.set_string(area.x + 1, header_y, &msg, header_style);
             return;
         }
 
@@ -169,36 +172,60 @@ impl Widget for DiffView<'_> {
             Some(s) => s,
             None => return,
         };
-        let batch = match diff.batch.as_ref() {
+        let full_batch = match diff.batch.as_ref() {
             Some(b) => b,
             None => return,
         };
 
-        let total_rows = batch.num_rows();
+        let visible_count = diff.visible_row_count();
 
         // Header text
+        let hide_label = if diff.hide_common { " [changes only]" } else { "" };
         let header_text = format!(
-            " Diff: {} vs {} | +{} -{} ~{} ={}",
+            " Diff: {} vs {} | +{} -{} ~{} ={}{}",
             diff.file_a,
             diff.file_b,
             diff.counts.only_a,
             diff.counts.only_b,
             diff.counts.changed,
             diff.counts.common,
+            hide_label,
         );
         buf.set_string(area.x, header_y, &header_text, header_style);
 
         // Scroll position indicator
-        if total_rows > 0 {
-            let pos_text = format!(" {}/{} ", diff.scroll_offset + 1, total_rows);
+        if visible_count > 0 {
+            let pos_text = format!(" {}/{} ", diff.scroll_offset + 1, visible_count);
             let pos_x = area.x + area.width - pos_text.width() as u16;
             buf.set_string(pos_x, header_y, &pos_text, header_style);
         }
 
         let fields = schema.fields();
-        if fields.is_empty() || total_rows == 0 {
+        if fields.is_empty() || visible_count == 0 {
             return;
         }
+
+        // When hide_common is on, build a filtered batch and markers
+        let (render_batch, render_markers, render_changed_cells);
+        let (batch_ref, markers_ref, changed_ref, scroll_offset);
+
+        if diff.hide_common && !diff.visible_rows.is_empty() {
+            let slices: Vec<_> = diff.visible_rows.iter().map(|&i| full_batch.slice(i, 1)).collect();
+            render_batch = concat_batches(schema, &slices).unwrap_or_else(|_| full_batch.clone());
+            render_markers = diff.visible_rows.iter().map(|&i| diff.markers[i]).collect::<Vec<_>>();
+            render_changed_cells = diff.visible_rows.iter().map(|&i| {
+                diff.changed_cells.get(i).cloned().unwrap_or_default()
+            }).collect::<Vec<_>>();
+            batch_ref = &render_batch;
+            markers_ref = &render_markers;
+            changed_ref = &render_changed_cells;
+            scroll_offset = diff.scroll_offset;
+        } else {
+            batch_ref = full_batch;
+            markers_ref = &diff.markers;
+            changed_ref = &diff.changed_cells;
+            scroll_offset = diff.scroll_offset;
+        };
 
         // Determine which columns are key columns vs diff columns
         let key_col_indices: Vec<usize> = fields
@@ -215,11 +242,11 @@ impl Widget for DiffView<'_> {
             .collect();
 
         let styler = DiffStyler {
-            markers: &diff.markers,
-            changed_cells: &diff.changed_cells,
+            markers: markers_ref,
+            changed_cells: changed_ref,
             key_col_indices,
             diff_col_indices,
-            scroll_offset: diff.scroll_offset,
+            scroll_offset,
         };
 
         // Table area starts below the cyan header bar
@@ -230,8 +257,8 @@ impl Widget for DiffView<'_> {
             height: area.height.saturating_sub(1),
         };
 
-        UnifiedTable::new(schema, batch, &styler)
-            .scroll_offset(diff.scroll_offset)
+        UnifiedTable::new(schema, batch_ref, &styler)
+            .scroll_offset(scroll_offset)
             .column_offset(diff.column_offset)
             .render(table_area, buf);
     }

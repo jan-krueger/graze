@@ -1,6 +1,8 @@
 pub mod column_picker;
 pub mod diff_view;
+pub mod help_overlay;
 pub mod input_bar;
+pub mod popup;
 pub mod sql_pad;
 pub mod stats_overlay;
 pub mod status_bar;
@@ -17,6 +19,7 @@ use crate::app::{App, AppMode};
 
 use self::column_picker::ColumnPicker;
 use self::diff_view::DiffView;
+use self::help_overlay::HelpOverlay;
 use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
 use self::stats_overlay::StatsOverlay;
@@ -60,10 +63,15 @@ impl Widget for AppView<'_> {
         );
         let show_column_hide = matches!(self.app.mode, AppMode::ColumnHide);
         let show_diff = matches!(self.app.mode, AppMode::Diff);
+        let show_help = matches!(self.app.mode, AppMode::Help);
 
         let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(main_area);
 
-        if show_column_hide {
+        if show_help {
+            TableView::new(self.app).render(chunks[0], buf);
+            StatusBar::new(self.app).render(chunks[1], buf);
+            HelpOverlay::new(self.app).render(area, buf);
+        } else if show_column_hide {
             TableView::new(self.app).render(chunks[0], buf);
             StatusBar::new(self.app).render(chunks[1], buf);
             ColumnPicker::new(self.app).render(area, buf);

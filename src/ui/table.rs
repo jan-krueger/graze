@@ -187,6 +187,8 @@ struct NormalStyler {
     search_matcher: Option<SearchMatcher>,
     simple_filter: Option<SimpleFilter>,
     highlight_col_idx: Option<usize>,
+    /// Buffer-relative row index of the current search match (for distinct highlighting).
+    current_match_data_row: Option<usize>,
 }
 
 impl TableStyler for NormalStyler {
@@ -221,7 +223,7 @@ impl TableStyler for NormalStyler {
     fn cell(
         &self,
         col_idx: usize,
-        _data_row: usize,
+        data_row: usize,
         formatted: &str,
         is_null: bool,
         base: Style,
@@ -259,7 +261,14 @@ impl TableStyler for NormalStyler {
 
         if let Some(ref matcher) = self.search_matcher {
             if matcher.is_match(val) {
-                style = style.fg(Color::Yellow).bg(Color::Black);
+                if self.current_match_data_row == Some(data_row) {
+                    style = Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(ratatui::style::Modifier::BOLD);
+                } else {
+                    style = style.fg(Color::Yellow).bg(Color::Black);
+                }
             }
         }
 
@@ -298,13 +307,14 @@ impl Widget for TableView<'_> {
         let buf_end = tab.data.buffer_offset + batch.num_rows();
         let view_end = tab.viewport.view_start + tab.viewport.page_size;
         if tab.viewport.view_start >= buf_end || view_end <= tab.data.buffer_offset {
-            let msg = " Loading... ";
+            let spinner = self.app.spinner_char();
+            let msg = format!(" {} Loading... ", spinner);
             let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
             let y = area.y + area.height / 2;
             buf.set_string(
                 x,
                 y,
-                msg,
+                &msg,
                 ratatui::style::Style::default()
                     .fg(ratatui::style::Color::DarkGray)
                     .add_modifier(ratatui::style::Modifier::ITALIC),
@@ -337,6 +347,13 @@ impl Widget for TableView<'_> {
             .selected_row
             .saturating_sub(tab.data.buffer_offset);
 
+        // Compute the buffer-relative row of the current search match
+        let current_match_data_row = tab
+            .search
+            .match_index
+            .and_then(|idx| tab.search.match_rows.get(idx.wrapping_sub(1)).copied())
+            .and_then(|abs_row| abs_row.checked_sub(tab.data.buffer_offset));
+
         let styler = NormalStyler {
             selected_data_row,
             col_select_active,
@@ -344,6 +361,7 @@ impl Widget for TableView<'_> {
             search_matcher,
             simple_filter,
             highlight_col_idx,
+            current_match_data_row,
         };
 
         // Build per-column width overrides

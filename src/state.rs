@@ -369,6 +369,9 @@ pub struct DiffState {
     pub key_columns: Vec<String>,
     pub diff_columns: Vec<String>,
     pub setup: DiffSetup,
+    pub hide_common: bool,
+    /// Indices of visible rows when `hide_common` is true (non-Common rows).
+    pub visible_rows: Vec<usize>,
 }
 
 impl DiffState {
@@ -388,6 +391,41 @@ impl DiffState {
             key_columns: Vec::new(),
             diff_columns: Vec::new(),
             setup: DiffSetup::new(),
+            hide_common: false,
+            visible_rows: Vec::new(),
+        }
+    }
+
+    /// Rebuild the visible_rows index based on hide_common toggle.
+    pub fn rebuild_visible_rows(&mut self) {
+        if self.hide_common {
+            self.visible_rows = self
+                .markers
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| **m != DiffMarker::Common)
+                .map(|(i, _)| i)
+                .collect();
+        } else {
+            self.visible_rows.clear();
+        }
+    }
+
+    /// Total rows visible in the current view (filtered or full).
+    pub fn visible_row_count(&self) -> usize {
+        if self.hide_common {
+            self.visible_rows.len()
+        } else {
+            self.batch.as_ref().map_or(0, |b| b.num_rows())
+        }
+    }
+
+    /// Map a display row index to the actual data row index.
+    pub fn display_to_data_row(&self, display_row: usize) -> usize {
+        if self.hide_common {
+            self.visible_rows.get(display_row).copied().unwrap_or(0)
+        } else {
+            display_row
         }
     }
 }

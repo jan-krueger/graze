@@ -105,14 +105,14 @@ pub(crate) fn handle_setup_cols(app: &mut App, key: crossterm::event::KeyEvent) 
 }
 
 pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
-    let total_rows = app.diff.batch.as_ref().map_or(0, |b| b.num_rows());
+    let visible_rows = app.diff.visible_row_count();
     let page_size = app.tab().viewport.page_size;
     let half_page = (page_size / 2).max(1);
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            if total_rows > 0 {
-                app.diff.scroll_offset = (app.diff.scroll_offset + 1).min(total_rows - 1);
+            if visible_rows > 0 {
+                app.diff.scroll_offset = (app.diff.scroll_offset + 1).min(visible_rows - 1);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
@@ -122,14 +122,14 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
             app.diff.scroll_offset = 0;
         }
         KeyCode::Char('G') => {
-            if total_rows > 0 {
-                app.diff.scroll_offset = total_rows - 1;
+            if visible_rows > 0 {
+                app.diff.scroll_offset = visible_rows - 1;
             }
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if total_rows > 0 {
+            if visible_rows > 0 {
                 app.diff.scroll_offset =
-                    (app.diff.scroll_offset + half_page).min(total_rows - 1);
+                    (app.diff.scroll_offset + half_page).min(visible_rows - 1);
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -147,43 +147,74 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('n') => {
-            // Jump to next diff row (skip Common)
-            if total_rows > 0 {
-                let start = app.diff.scroll_offset + 1;
-                for i in start..total_rows {
-                    if app.diff.markers[i] != DiffMarker::Common {
-                        app.diff.scroll_offset = i;
-                        return;
-                    }
+            if app.diff.hide_common {
+                // All visible rows are diffs, just step forward
+                if visible_rows > 0 {
+                    app.diff.scroll_offset = if app.diff.scroll_offset + 1 < visible_rows {
+                        app.diff.scroll_offset + 1
+                    } else {
+                        0 // wrap
+                    };
                 }
-                // Wrap around
-                for i in 0..start.min(total_rows) {
-                    if app.diff.markers[i] != DiffMarker::Common {
-                        app.diff.scroll_offset = i;
-                        return;
+            } else {
+                // Jump to next diff row (skip Common)
+                let total = app.diff.markers.len();
+                if total > 0 {
+                    let start = app.diff.scroll_offset + 1;
+                    for i in start..total {
+                        if app.diff.markers[i] != DiffMarker::Common {
+                            app.diff.scroll_offset = i;
+                            return;
+                        }
                     }
-                }
-            }
-        }
-        KeyCode::Char('N') => {
-            // Jump to prev diff row (skip Common)
-            if total_rows > 0 {
-                let start = app.diff.scroll_offset;
-                if start > 0 {
-                    for i in (0..start).rev() {
+                    for i in 0..start.min(total) {
                         if app.diff.markers[i] != DiffMarker::Common {
                             app.diff.scroll_offset = i;
                             return;
                         }
                     }
                 }
-                // Wrap around
-                for i in (start..total_rows).rev() {
-                    if app.diff.markers[i] != DiffMarker::Common {
-                        app.diff.scroll_offset = i;
-                        return;
+            }
+        }
+        KeyCode::Char('N') => {
+            if app.diff.hide_common {
+                if visible_rows > 0 {
+                    app.diff.scroll_offset = if app.diff.scroll_offset > 0 {
+                        app.diff.scroll_offset - 1
+                    } else {
+                        visible_rows - 1 // wrap
+                    };
+                }
+            } else {
+                let total = app.diff.markers.len();
+                if total > 0 {
+                    let start = app.diff.scroll_offset;
+                    if start > 0 {
+                        for i in (0..start).rev() {
+                            if app.diff.markers[i] != DiffMarker::Common {
+                                app.diff.scroll_offset = i;
+                                return;
+                            }
+                        }
+                    }
+                    for i in (start..total).rev() {
+                        if app.diff.markers[i] != DiffMarker::Common {
+                            app.diff.scroll_offset = i;
+                            return;
+                        }
                     }
                 }
+            }
+        }
+        KeyCode::Char('c') => {
+            app.diff.hide_common = !app.diff.hide_common;
+            app.diff.rebuild_visible_rows();
+            // Clamp scroll offset to new visible row count
+            let visible = app.diff.visible_row_count();
+            if visible > 0 {
+                app.diff.scroll_offset = app.diff.scroll_offset.min(visible - 1);
+            } else {
+                app.diff.scroll_offset = 0;
             }
         }
         KeyCode::Esc => {
@@ -193,6 +224,8 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
             app.diff.changed_cells.clear();
             app.diff.error = None;
             app.diff.loading = false;
+            app.diff.hide_common = false;
+            app.diff.visible_rows.clear();
             app.status_message = None;
             app.mode = AppMode::Normal;
         }

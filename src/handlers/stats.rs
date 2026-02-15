@@ -4,7 +4,7 @@ use crate::app::{App, AppMode};
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let total_rows = app.stats.batch.as_ref().map_or(0, |b| b.num_rows());
-    let half_page = (app.tab().viewport.page_size / 4).max(1);
+    let half_page = (app.tab().viewport.page_size / 2).max(1);
 
     match key.code {
         KeyCode::Esc => {

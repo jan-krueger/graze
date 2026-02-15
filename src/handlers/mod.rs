@@ -2,6 +2,7 @@ mod columns;
 mod diff;
 mod filter;
 mod goto;
+mod help;
 mod normal;
 mod search;
 mod sql;
@@ -22,6 +23,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         AppMode::Diff => diff::handle_diff(app, key),
         AppMode::GoToRow => goto::handle_key(app, key),
         AppMode::ColumnHide => columns::handle_key(app, key),
+        AppMode::Help => help::handle_key(app, key),
         AppMode::Quitting => {}
     }
 }
