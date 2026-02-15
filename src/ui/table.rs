@@ -1,75 +1,11 @@
-use duckdb::arrow::array::Array;
-use duckdb::arrow::datatypes::DataType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::event::SortState;
 use crate::state::{SearchMode, SelectionMode};
-use crate::ui::table_render::{build_formatters, compute_column_widths, truncate_to_width, visible_columns};
-
-/// Convert a 1-based position to a subscript digit character.
-pub(crate) fn subscript_digit(n: usize) -> char {
-    const SUBSCRIPTS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
-    if n < SUBSCRIPTS.len() {
-        SUBSCRIPTS[n]
-    } else {
-        char::from_digit(n as u32, 10).unwrap_or('?')
-    }
-}
-
-/// Build the sort indicator suffix for a column header.
-fn sort_indicator_string(state: &SortState, col_name: &str, multi: bool) -> String {
-    if let Some(pos) = state.position(col_name) {
-        let order = state.order_for(col_name).unwrap();
-        let arrow = order.indicator();
-        if multi {
-            format!(" {}{}", arrow, subscript_digit(pos + 1))
-        } else {
-            format!(" {}", arrow)
-        }
-    } else {
-        String::new()
-    }
-}
-
-/// Map an Arrow DataType to a display color by category.
-pub fn type_color(data_type: &DataType) -> Color {
-    match data_type {
-        DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64
-        | DataType::Float16
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Decimal128(_, _)
-        | DataType::Decimal256(_, _) => Color::Green,
-
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Color::Yellow,
-
-        DataType::Boolean => Color::Magenta,
-
-        DataType::Date32
-        | DataType::Date64
-        | DataType::Timestamp(_, _)
-        | DataType::Time32(_)
-        | DataType::Time64(_)
-        | DataType::Duration(_)
-        | DataType::Interval(_) => Color::Blue,
-
-        DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => Color::Red,
-
-        _ => Color::White,
-    }
-}
+use crate::ui::table_render::{UnifiedTable, TableStyler};
 
 #[derive(Debug)]
 struct SimpleFilter {
@@ -263,6 +199,99 @@ impl SearchMatcher {
     }
 }
 
+/// Styler for the normal table view: row/column selection, search highlighting, filter highlighting.
+struct NormalStyler {
+    selected_row_in_view: usize,
+    visible_count: usize,
+    col_select_active: bool,
+    selected_col: usize,
+    search_matcher: Option<SearchMatcher>,
+    simple_filter: Option<SimpleFilter>,
+    highlight_col_idx: Option<usize>,
+}
+
+impl TableStyler for NormalStyler {
+    fn col_header_style(&self, col_idx: usize, base: Style) -> Style {
+        if self.col_select_active && col_idx == self.selected_col {
+            base.bg(Color::DarkGray)
+        } else {
+            base
+        }
+    }
+
+    fn row_prefix(&self, data_row: usize) -> (&str, Style) {
+        let display_row = data_row; // data_row is relative to scroll_offset
+        let is_selected = display_row < self.visible_count
+            && display_row == self.selected_row_in_view;
+        let show_highlight = is_selected && !self.col_select_active;
+        if show_highlight {
+            (">> ", Style::default().bg(Color::DarkGray).fg(Color::Yellow))
+        } else {
+            ("   ", Style::default())
+        }
+    }
+
+    fn row_bg(&self, data_row: usize) -> Style {
+        let display_row = data_row;
+        let is_selected = display_row < self.visible_count
+            && display_row == self.selected_row_in_view;
+        let show_highlight = is_selected && !self.col_select_active;
+        if show_highlight {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
+    }
+
+    fn cell(
+        &self,
+        col_idx: usize,
+        _data_row: usize,
+        formatted: &str,
+        is_null: bool,
+        base: Style,
+    ) -> (String, Style) {
+        let is_col_selected = self.col_select_active && col_idx == self.selected_col;
+        let base_style = if is_col_selected {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            base
+        };
+
+        if is_null {
+            return ("NULL".to_string(), base_style.fg(Color::DarkGray));
+        }
+
+        // We need the actual formatted value for filter/search matching
+        // The formatted value is passed in, but for "?" fallback we use what's given
+        let val = formatted;
+
+        let mut style = if is_col_selected {
+            base_style
+        } else if self.highlight_col_idx == Some(col_idx) {
+            if let Some(ref sf) = self.simple_filter {
+                if cell_matches_filter(val, sf) {
+                    base_style.fg(Color::Yellow)
+                } else {
+                    base_style
+                }
+            } else {
+                base_style
+            }
+        } else {
+            base_style
+        };
+
+        if let Some(ref matcher) = self.search_matcher {
+            if matcher.is_match(val) {
+                style = style.fg(Color::Yellow).bg(Color::Black);
+            }
+        }
+
+        (val.to_string(), style)
+    }
+}
+
 pub struct TableView<'a> {
     app: &'a App,
 }
@@ -289,120 +318,11 @@ impl Widget for TableView<'_> {
             return;
         }
 
-        let batch_rows = batch.num_rows();
-        let fields = schema.fields();
-
         let view_off = self.app.view_offset_in_buffer();
         let visible_count = self.app.visible_row_count();
 
-        let formatters = build_formatters(batch);
-
-        let multi = tab.data.sort_state.specs().len() > 1;
-        let sort_state = &tab.data.sort_state;
-
-        let (headers, col_widths) = compute_column_widths(
-            schema,
-            batch,
-            &formatters,
-            &|_i, name, type_str| {
-                let sort_ind = sort_indicator_string(sort_state, name, multi);
-                format!("{} [{}]{}", name, type_str, sort_ind)
-            },
-            (view_off, (view_off + visible_count).min(batch_rows)),
-            50,
-        );
-
-        let row_prefix_width = 3;
-        let visible_cols = visible_columns(
-            &col_widths,
-            area.width as usize,
-            tab.viewport.column_offset,
-            row_prefix_width,
-        );
-
-        if visible_cols.is_empty() {
-            return;
-        }
-
         let col_select_active = tab.viewport.selection_mode == SelectionMode::Column;
         let selected_col = tab.viewport.selected_col;
-
-        let header_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        let mut x = area.x + row_prefix_width as u16;
-        let header_y = area.y;
-
-        buf.set_string(
-            area.x,
-            header_y,
-            " ".repeat(area.width as usize),
-            Style::default(),
-        );
-
-        for &col_idx in &visible_cols {
-            let field = &fields[col_idx];
-            let header = &headers[col_idx];
-            let width = col_widths[col_idx] as usize;
-            let is_col_selected = col_select_active && col_idx == selected_col;
-
-            let col_header_style = if is_col_selected {
-                header_style.bg(Color::DarkGray)
-            } else {
-                header_style
-            };
-
-            if header.width() > width {
-                let display: String = header.chars().take(width).collect();
-                buf.set_string(x, header_y, &display, col_header_style);
-            } else {
-                let name_part = field.name();
-                buf.set_string(x, header_y, name_part, col_header_style);
-                let mut cx = x + name_part.width() as u16;
-
-                let type_str = format!("{}", field.data_type()).to_lowercase();
-                let tc = type_color(field.data_type());
-                let mut type_style = Style::default().fg(tc).add_modifier(Modifier::BOLD);
-                if is_col_selected {
-                    type_style = type_style.bg(Color::DarkGray);
-                }
-
-                let bracket_style = if is_col_selected {
-                    col_header_style
-                } else {
-                    header_style
-                };
-                buf.set_string(cx, header_y, " [", bracket_style);
-                cx += 2;
-                buf.set_string(cx, header_y, &type_str, type_style);
-                cx += type_str.width() as u16;
-                buf.set_string(cx, header_y, "]", bracket_style);
-                cx += 1;
-
-                let sort_indicator =
-                    sort_indicator_string(&tab.data.sort_state, field.name(), multi);
-                if !sort_indicator.is_empty() {
-                    buf.set_string(cx, header_y, &sort_indicator, col_header_style);
-                    cx += sort_indicator.width() as u16;
-                }
-
-                let used = (cx - x) as usize;
-                if used < width {
-                    let pad_style = if is_col_selected {
-                        Style::default().bg(Color::DarkGray)
-                    } else {
-                        Style::default()
-                    };
-                    buf.set_string(
-                        cx,
-                        header_y,
-                        " ".repeat(width - used),
-                        pad_style,
-                    );
-                }
-            }
-            x += col_widths[col_idx] + 2;
-        }
 
         let simple_filter = tab
             .filter
@@ -411,106 +331,28 @@ impl Widget for TableView<'_> {
             .and_then(|f| parse_simple_filter(f));
 
         let highlight_col_idx: Option<usize> = simple_filter.as_ref().and_then(|sf| {
-            fields
+            schema
+                .fields()
                 .iter()
                 .position(|f| f.name().eq_ignore_ascii_case(&sf.column))
         });
 
         let search_matcher = SearchMatcher::from_search_state(self.app);
 
-        let data_start_y = header_y + 1;
-        let max_display_rows = (area.height - 1) as usize;
+        let styler = NormalStyler {
+            selected_row_in_view: tab.viewport.selected_row_in_view(),
+            visible_count,
+            col_select_active,
+            selected_col,
+            search_matcher,
+            simple_filter,
+            highlight_col_idx,
+        };
 
-        for display_row in 0..max_display_rows {
-            let row_y = data_start_y + display_row as u16;
-            if row_y >= area.y + area.height {
-                break;
-            }
-
-            let batch_row = view_off + display_row;
-
-            if display_row >= visible_count || batch_row >= batch_rows {
-                buf.set_string(
-                    area.x,
-                    row_y,
-                    " ".repeat(area.width as usize),
-                    Style::default(),
-                );
-                continue;
-            }
-
-            let is_selected_row =
-                display_row == tab.viewport.selected_row_in_view();
-            let show_row_highlight = is_selected_row && !col_select_active;
-            let row_style = if show_row_highlight {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-
-            buf.set_string(
-                area.x,
-                row_y,
-                " ".repeat(area.width as usize),
-                row_style,
-            );
-
-            let prefix = if show_row_highlight { ">> " } else { "   " };
-            buf.set_string(
-                area.x,
-                row_y,
-                prefix,
-                if show_row_highlight {
-                    row_style.fg(Color::Yellow)
-                } else {
-                    row_style
-                },
-            );
-
-            let mut x = area.x + row_prefix_width as u16;
-            for &col_idx in &visible_cols {
-                let width = col_widths[col_idx] as usize;
-                let column = batch.column(col_idx);
-                let is_null = column.is_null(batch_row);
-                let is_col_selected = col_select_active && col_idx == selected_col;
-                let base_style = if is_col_selected {
-                    Style::default().bg(Color::DarkGray)
-                } else {
-                    row_style
-                };
-
-                let (display_val, cell_style) = if is_null {
-                    ("NULL".to_string(), base_style.fg(Color::DarkGray))
-                } else if let Some(ref fmt) = formatters[col_idx] {
-                    let val = fmt.value(batch_row).to_string();
-                    let mut style = if is_col_selected {
-                        base_style
-                    } else if highlight_col_idx == Some(col_idx) {
-                        if let Some(ref sf) = simple_filter {
-                            if cell_matches_filter(&val, sf) {
-                                base_style.fg(Color::Yellow)
-                            } else {
-                                base_style
-                            }
-                        } else {
-                            base_style
-                        }
-                    } else {
-                        base_style
-                    };
-                    if let Some(ref matcher) = search_matcher {
-                        if matcher.is_match(&val) {
-                            style = style.fg(Color::Yellow).bg(Color::Black);
-                        }
-                    }
-                    (val, style)
-                } else {
-                    ("?".to_string(), base_style)
-                };
-
-                buf.set_string(x, row_y, &truncate_to_width(&display_val, width), cell_style);
-                x += col_widths[col_idx] + 2;
-            }
-        }
+        UnifiedTable::new(schema, batch, &styler)
+            .scroll_offset(view_off)
+            .column_offset(tab.viewport.column_offset)
+            .sort_state(&tab.data.sort_state)
+            .render(area, buf);
     }
 }

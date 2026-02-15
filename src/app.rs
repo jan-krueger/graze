@@ -280,8 +280,9 @@ impl App {
 
     /// Compute how many columns are visible at the current terminal width and column offset.
     pub fn visible_col_count(&self) -> usize {
-        use crate::ui::table::subscript_digit;
-        use crate::ui::table_render::{build_formatters, compute_column_widths, visible_columns};
+        use crate::ui::table_render::{
+            build_formatters, compute_column_widths, sort_indicator_string, visible_columns,
+        };
 
         let tab = self.tab();
         let schema = match tab.data.schema.as_ref() {
@@ -310,17 +311,7 @@ impl App {
             batch,
             &formatters,
             &|_i, name, type_str| {
-                let sort_ind = if let Some(pos) = sort_state.position(name) {
-                    let order = sort_state.order_for(name).unwrap();
-                    let arrow = order.indicator();
-                    if multi {
-                        format!(" {}{}", arrow, subscript_digit(pos + 1))
-                    } else {
-                        format!(" {}", arrow)
-                    }
-                } else {
-                    String::new()
-                };
+                let sort_ind = sort_indicator_string(sort_state, name, multi);
                 format!("{} [{}]{}", name, type_str, sort_ind)
             },
             (view_off, (view_off + visible_count).min(batch_rows)),

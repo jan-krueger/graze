@@ -4,10 +4,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::ui::table::type_color;
-use crate::ui::table_render::{build_formatters, compute_column_widths, truncate_to_width, visible_columns};
+use crate::ui::table_render::{type_color, TableStyler, UnifiedTable};
 
 pub struct StatsOverlay<'a> {
     app: &'a App,
@@ -16,6 +16,61 @@ pub struct StatsOverlay<'a> {
 impl<'a> StatsOverlay<'a> {
     pub fn new(app: &'a App) -> Self {
         Self { app }
+    }
+}
+
+/// Styler for stats: alternating row colors, column_name in cyan, column_type with arrow type overrides.
+struct StatsStyler {
+    column_name_idx: Option<usize>,
+    column_type_idx: Option<usize>,
+    arrow_type_overrides: Vec<Option<String>>,
+    row_type_colors: Vec<Option<Color>>,
+    scroll_offset: usize,
+}
+
+impl TableStyler for StatsStyler {
+    fn row_prefix(&self, _data_row: usize) -> (&str, Style) {
+        (" ", Style::default())
+    }
+
+    fn row_bg(&self, data_row: usize) -> Style {
+        let abs_row = self.scroll_offset + data_row;
+        if abs_row % 2 == 0 {
+            Style::default()
+        } else {
+            Style::default().fg(Color::White)
+        }
+    }
+
+    fn cell(
+        &self,
+        col_idx: usize,
+        data_row: usize,
+        formatted: &str,
+        is_null: bool,
+        base: Style,
+    ) -> (String, Style) {
+        if is_null {
+            return ("NULL".to_string(), Style::default().fg(Color::DarkGray));
+        }
+
+        let abs_row = self.scroll_offset + data_row;
+
+        if self.column_type_idx == Some(col_idx) {
+            if let Some(ref override_val) = self.arrow_type_overrides.get(abs_row).and_then(|v| v.as_ref()) {
+                let style = match self.row_type_colors.get(abs_row).and_then(|c| *c) {
+                    Some(c) => base.fg(c),
+                    None => base,
+                };
+                return (override_val.to_string(), style);
+            }
+        }
+
+        if self.column_name_idx == Some(col_idx) {
+            return (formatted.to_string(), base.fg(Color::Cyan));
+        }
+
+        (formatted.to_string(), base)
     }
 }
 
@@ -84,8 +139,6 @@ impl Widget for StatsOverlay<'_> {
             return;
         }
 
-        let formatters = build_formatters(batch);
-
         let column_name_idx = fields
             .iter()
             .position(|f| f.name() == "column_name");
@@ -127,25 +180,11 @@ impl Widget for StatsOverlay<'_> {
                 (vec![None; batch_rows], vec![None; batch_rows])
             };
 
-        // data_rows_height = lines available for data (minus header bar and column header)
-        let data_rows_height = (area.height as usize).saturating_sub(2);
-        let sample_end = (scroll_offset + data_rows_height).min(batch_rows);
-
-        // Compute column widths, accounting for type overrides in column_type column
-        let (headers, col_widths) = compute_column_widths(
-            schema,
-            batch,
-            &formatters,
-            &|_i, name, _type_str| name.to_string(),
-            (scroll_offset, sample_end),
-            40,
-        );
-
-        // Override column_type widths to account for arrow type override values
-        let mut col_widths = col_widths;
-        if let Some(ct_idx) = column_type_idx {
-            use unicode_width::UnicodeWidthStr;
-            let mut max_w = col_widths[ct_idx];
+        // Compute column_type width adjustment for arrow type overrides
+        let col_width_adj: Vec<(usize, u16)> = if let Some(ct_idx) = column_type_idx {
+            let data_rows_height = (area.height as usize).saturating_sub(2);
+            let sample_end = (scroll_offset + data_rows_height).min(batch_rows);
+            let mut max_w: u16 = 0;
             for row in scroll_offset..sample_end {
                 if let Some(ref ov) = arrow_type_overrides[row] {
                     let w = ov.width() as u16;
@@ -154,119 +193,37 @@ impl Widget for StatsOverlay<'_> {
                     }
                 }
             }
-            col_widths[ct_idx] = max_w.clamp(4, 40);
-        }
-
-        let left_margin = 1; // 1 char left margin
-        let visible_cols = visible_columns(&col_widths, area.width as usize, 0, left_margin);
-
-        if visible_cols.is_empty() {
-            return;
-        }
-
-        // Render column headers
-        let col_header_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        let col_header_y = header_y + 1;
-
-        if col_header_y < area.y + area.height {
-            buf.set_string(
-                area.x,
-                col_header_y,
-                " ".repeat(area.width as usize),
-                Style::default(),
-            );
-
-            let mut x = area.x + 1;
-            for &col_idx in &visible_cols {
-                let header = &headers[col_idx];
-                let width = col_widths[col_idx] as usize;
-                buf.set_string(
-                    x,
-                    col_header_y,
-                    &truncate_to_width(header, width),
-                    col_header_style,
-                );
-                x += col_widths[col_idx] + 2;
-            }
-        }
-
-        // Render data rows
-        let data_start_y = col_header_y + 1;
-        let max_display_rows = (area.y + area.height).saturating_sub(data_start_y) as usize;
-
-        let row_even_style = Style::default();
-        let row_odd_style = Style::default().fg(Color::White);
-        let null_style = Style::default().fg(Color::DarkGray);
-
-        for display_row in 0..max_display_rows {
-            let row_y = data_start_y + display_row as u16;
-            if row_y >= area.y + area.height {
-                break;
-            }
-
-            let batch_row = scroll_offset + display_row;
-            if batch_row >= batch_rows {
-                buf.set_string(
-                    area.x,
-                    row_y,
-                    " ".repeat(area.width as usize),
-                    Style::default(),
-                );
-                continue;
-            }
-
-            let row_style = if batch_row % 2 == 0 {
-                row_even_style
+            if max_w > 0 {
+                vec![(ct_idx, max_w)]
             } else {
-                row_odd_style
-            };
-
-            buf.set_string(
-                area.x,
-                row_y,
-                " ".repeat(area.width as usize),
-                row_style,
-            );
-
-            let mut x = area.x + 1;
-            for &col_idx in &visible_cols {
-                let width = col_widths[col_idx] as usize;
-                let column = batch.column(col_idx);
-                let is_null = column.is_null(batch_row);
-
-                let (display_val, cell_style) = if is_null {
-                    ("NULL".to_string(), null_style)
-                } else if column_type_idx == Some(col_idx) {
-                    if let Some(ref override_val) = arrow_type_overrides[batch_row] {
-                        let style = match row_type_colors[batch_row] {
-                            Some(c) => row_style.fg(c),
-                            None => row_style,
-                        };
-                        (override_val.clone(), style)
-                    } else if let Some(ref fmt) = formatters[col_idx] {
-                        (fmt.value(batch_row).to_string(), row_style)
-                    } else {
-                        ("?".to_string(), row_style)
-                    }
-                } else if column_name_idx == Some(col_idx) {
-                    if let Some(ref fmt) = formatters[col_idx] {
-                        let val = fmt.value(batch_row).to_string();
-                        (val, row_style.fg(Color::Cyan))
-                    } else {
-                        ("?".to_string(), row_style)
-                    }
-                } else if let Some(ref fmt) = formatters[col_idx] {
-                    let val = fmt.value(batch_row).to_string();
-                    (val, row_style)
-                } else {
-                    ("?".to_string(), row_style)
-                };
-
-                buf.set_string(x, row_y, &truncate_to_width(&display_val, width), cell_style);
-                x += col_widths[col_idx] + 2;
+                vec![]
             }
-        }
+        } else {
+            vec![]
+        };
+
+        let styler = StatsStyler {
+            column_name_idx,
+            column_type_idx,
+            arrow_type_overrides,
+            row_type_colors,
+            scroll_offset,
+        };
+
+        // Table area starts below the cyan header bar
+        let table_area = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        };
+
+        UnifiedTable::new(schema, batch, &styler)
+            .scroll_offset(scroll_offset)
+            .left_margin(1)
+            .max_col_width(40)
+            .show_types(false)
+            .col_width_mins(&col_width_adj)
+            .render(table_area, buf);
     }
 }
