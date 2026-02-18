@@ -136,7 +136,7 @@ impl AppMode {
                 ("$col", "autocomplete"),
                 ("Tab", "complete"),
             ],
-            AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Esc", "cancel")],
+            AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Ctrl-t", "pin tab"), ("Esc", "cancel")],
             AppMode::Stats => &[("j/k", "scroll"), ("g/G", "top/bottom"), ("Esc", "close")],
             AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide => &[
                 ("Space", "toggle"),
@@ -147,6 +147,7 @@ impl AppMode {
             AppMode::Diff => &[
                 ("n", "next"),
                 ("N", "prev"),
+                ("h/l", "col"),
                 ("c", "changes"),
                 ("Esc", "close"),
             ],
@@ -229,6 +230,7 @@ pub struct App {
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
     diff_rx: Option<Receiver<DiffResult>>,
+    query_counter: usize,
 }
 
 impl App {
@@ -279,6 +281,7 @@ impl App {
             data_rxs,
             term_rx,
             diff_rx: None,
+            query_counter: 0,
         })
     }
 
@@ -406,6 +409,35 @@ impl App {
         self.active_tab =
             ((self.active_tab as isize + delta).rem_euclid(len as isize)) as usize;
         self.on_tab_switch();
+    }
+
+    pub fn add_tab_from_batch(&mut self, batch: RecordBatch, schema: Arc<Schema>) {
+        self.query_counter += 1;
+        let name = format!("Query {}", self.query_counter);
+
+        let (action_tx, action_rx) = mpsc::channel::<Action>();
+        let (data_tx, data_rx) = mpsc::channel::<DataEvent>();
+
+        let worker = Worker::new(action_rx, data_tx);
+        thread::spawn(move || worker.run());
+
+        let _ = action_tx.send(Action::LoadBatch {
+            batch,
+            schema,
+            name,
+        });
+
+        let tab = TabState::new();
+        self.tabs.push(tab);
+        self.action_txs.push(action_tx);
+        self.data_rxs.push(data_rx);
+
+        self.active_tab = self.tabs.len() - 1;
+        self.mode = AppMode::Normal;
+        self.sql.result = None;
+        self.sql.result_schema = None;
+        self.sql.error = None;
+        self.status_message = Some("Loading query result...".to_string());
     }
 
     fn on_tab_switch(&mut self) {
@@ -928,6 +960,11 @@ impl App {
                 self.diff.changed_cells = dr.changed_cells;
                 self.diff.schema = Some(dr.schema);
                 self.diff.batch = Some(dr.batch);
+                self.diff.b_side_batch = Some(dr.b_side_batch);
+                self.diff.b_side_col_map = dr.b_side_col_map;
+                self.diff.selected_col = 0;
+                self.diff.selected_row = 0;
+                self.diff.scroll_offset = 0;
                 self.diff.rebuild_visible_rows();
                 let c = &self.diff.counts;
                 self.status_message = Some(format!(
@@ -936,8 +973,8 @@ impl App {
                 ));
             }
             Err(e) => {
-                self.diff.error = Some(format!("{e}"));
-                self.status_message = Some(format!("Diff error: {e}"));
+                self.diff.error = Some(format!("{e:#}"));
+                self.status_message = Some(format!("Diff error: {e:#}"));
             }
         }
     }

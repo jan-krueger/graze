@@ -5,7 +5,7 @@ edition = "2024"
 repository = "https://github.com/jan-krueger/graze"
 
 [dependencies]
-duckdb = { version = "1.4", features = ["bundled"] }
+duckdb = { version = "1.4", features = ["bundled", "appender-arrow"] }
 ratatui = "0.29"
 crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }

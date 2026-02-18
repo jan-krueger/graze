@@ -362,8 +362,12 @@ pub struct DiffState {
     pub counts: DiffCounts,
     pub loading: bool,
     pub error: Option<String>,
+    /// Viewport start (first visible display row).
     pub scroll_offset: usize,
+    /// Cursor position (display row index).
+    pub selected_row: usize,
     pub column_offset: usize,
+    pub selected_col: usize,
     pub file_a: String,
     pub file_b: String,
     pub key_columns: Vec<String>,
@@ -372,6 +376,10 @@ pub struct DiffState {
     pub hide_common: bool,
     /// Indices of visible rows when `hide_common` is true (non-Common rows).
     pub visible_rows: Vec<usize>,
+    /// B-side values for diff columns (row-aligned with main batch).
+    pub b_side_batch: Option<RecordBatch>,
+    /// For each display column: Some(idx in b_side_batch) if it's a diff col, None otherwise.
+    pub b_side_col_map: Vec<Option<usize>>,
 }
 
 impl DiffState {
@@ -385,7 +393,9 @@ impl DiffState {
             loading: false,
             error: None,
             scroll_offset: 0,
+            selected_row: 0,
             column_offset: 0,
+            selected_col: 0,
             file_a: String::new(),
             file_b: String::new(),
             key_columns: Vec::new(),
@@ -393,6 +403,8 @@ impl DiffState {
             setup: DiffSetup::new(),
             hide_common: false,
             visible_rows: Vec::new(),
+            b_side_batch: None,
+            b_side_col_map: Vec::new(),
         }
     }
 
@@ -417,6 +429,15 @@ impl DiffState {
             self.visible_rows.len()
         } else {
             self.batch.as_ref().map_or(0, |b| b.num_rows())
+        }
+    }
+
+    /// Keep selected_row visible by scrolling the viewport.
+    pub fn adjust_view(&mut self, page_size: usize) {
+        if self.selected_row < self.scroll_offset {
+            self.scroll_offset = self.selected_row;
+        } else if self.selected_row >= self.scroll_offset + page_size {
+            self.scroll_offset = self.selected_row.saturating_sub(page_size.saturating_sub(1));
         }
     }
 

@@ -1,5 +1,5 @@
 mod backend;
-mod formats;
+pub(crate) mod formats;
 
 use std::path::Path;
 use std::sync::Arc;

@@ -39,6 +39,22 @@ impl DuckDbBackend {
         })
     }
 
+    /// Create a backend from an already-populated table (no load_sql needed).
+    pub fn new_from_table(conn: Connection, table_name: &str) -> Result<Self> {
+        let schema = Self::query_schema(&conn, table_name)?;
+        let total_rows = Self::query_count(&conn, table_name, None)?;
+
+        Ok(Self {
+            conn,
+            table_name: table_name.to_string(),
+            schema,
+            total_rows,
+            sort_state: SortState::default(),
+            current_filter: None,
+            cached_data: None,
+        })
+    }
+
     /// Create a backend without counting rows (for VIEW-based quick startup).
     /// total_rows is set to 0, meaning "unknown".
     pub fn new_without_count(conn: Connection, load_sql: &str, table_name: &str) -> Result<Self> {

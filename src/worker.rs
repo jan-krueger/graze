@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use std::sync::Arc;
 
+use duckdb::arrow::datatypes::Schema;
+use duckdb::arrow::record_batch::RecordBatch;
+
 use crate::event::{Action, DataEvent, SortState};
 use crate::provider::{self, DataProvider};
 
@@ -63,6 +66,9 @@ impl Worker {
                     self.handle_collect_matches(term, is_regex)
                 }
                 Action::ExecuteSql(sql) => self.handle_execute_sql(sql),
+                Action::LoadBatch { batch, schema, name } => {
+                    self.handle_load_batch(batch, schema, name)
+                }
             }
         }
     }
@@ -285,6 +291,28 @@ impl Worker {
                         sql,
                     });
                 }
+            }
+        }
+    }
+
+    fn handle_load_batch(&mut self, batch: RecordBatch, schema: Arc<Schema>, name: String) {
+        match provider::formats::from_batch(&batch, &schema, "query_data") {
+            Ok(mut p) => {
+                let _ = p.materialize_cache();
+                let total_rows = p.total_rows();
+                let table_name = p.table_name().to_string();
+                self.provider = Some(Box::new(p));
+                let _ = self.event_tx.send(DataEvent::FileLoaded {
+                    schema,
+                    total_rows,
+                    file_name: name,
+                    table_name,
+                });
+            }
+            Err(e) => {
+                let _ = self
+                    .event_tx
+                    .send(DataEvent::Error(format!("Failed to load batch: {e:#}")));
             }
         }
     }

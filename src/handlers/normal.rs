@@ -60,7 +60,9 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 SelectionMode::Row => {
                     if app.tab().viewport.column_offset > 0 {
                         let hidden = &app.tab().hidden_columns;
-                        let new_off = next_visible_col(app.tab().viewport.column_offset, -1, hidden, 0);
+                        let max_col = app.tab().data.schema.as_ref()
+                            .map_or(0, |s| s.fields().len().saturating_sub(1));
+                        let new_off = next_visible_col(app.tab().viewport.column_offset, -1, hidden, max_col);
                         app.tab_mut().viewport.column_offset = new_off;
                     }
                 }

@@ -15,6 +15,11 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
             execute_sql_pad(app);
         }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let (Some(batch), Some(schema)) = (app.sql.result.take(), app.sql.result_schema.take()) {
+                app.add_tab_from_batch(batch, schema);
+            }
+        }
         KeyCode::Enter => {
             // Insert newline (max 5 lines)
             if app.sql.lines.len() < 5 {

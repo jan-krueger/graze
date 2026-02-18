@@ -17,6 +17,10 @@ pub struct DiffResultData {
     pub markers: Vec<DiffMarker>,
     pub changed_cells: Vec<Vec<bool>>,
     pub counts: DiffCounts,
+    /// B-side values for diff columns, row-aligned with main batch.
+    pub b_side_batch: RecordBatch,
+    /// For each display column: Some(idx in b_side_batch) if it's a diff col, None otherwise.
+    pub b_side_col_map: Vec<Option<usize>>,
 }
 
 fn load_sql_for_path(path: &Path, table_name: &str) -> Result<String> {
@@ -69,20 +73,20 @@ pub fn compute_diff(
     // Build the SELECT clause
     let mut select_parts = Vec::new();
 
-    // Key columns: COALESCE(a.key, b.key)
+    // Key columns: COALESCE(a.key, b.key) — cast to VARCHAR to handle type mismatches
     for key in key_columns {
         select_parts.push(format!(
-            "COALESCE(a.\"{key}\", b.\"{key}\") AS \"{key}\""
+            "COALESCE(a.\"{key}\"::VARCHAR, b.\"{key}\"::VARCHAR) AS \"{key}\""
         ));
     }
 
-    // Non-key columns from A: COALESCE(a.col, b.col) so only_b rows show B's values
+    // Non-key columns: COALESCE(a.col, b.col) — cast to VARCHAR to handle type mismatches
     for col in &all_columns {
         if key_columns.contains(col) {
             continue;
         }
         select_parts.push(format!(
-            "COALESCE(a.\"{col}\", b.\"{col}\") AS \"{col}\""
+            "COALESCE(a.\"{col}\"::VARCHAR, b.\"{col}\"::VARCHAR) AS \"{col}\""
         ));
     }
 
@@ -95,7 +99,7 @@ pub fn compute_diff(
     let mut diff_conditions = Vec::new();
     for col in diff_columns {
         diff_conditions.push(format!(
-            "a.\"{col}\" IS DISTINCT FROM b.\"{col}\""
+            "a.\"{col}\"::VARCHAR IS DISTINCT FROM b.\"{col}\"::VARCHAR"
         ));
     }
     let changed_expr = if diff_conditions.is_empty() {
@@ -124,14 +128,14 @@ pub fn compute_diff(
     // JOIN condition
     let join_conds: Vec<String> = key_columns
         .iter()
-        .map(|k| format!("a.\"{k}\" = b.\"{k}\""))
+        .map(|k| format!("a.\"{k}\"::VARCHAR = b.\"{k}\"::VARCHAR"))
         .collect();
     let join_on = join_conds.join(" AND ");
 
     // ORDER BY key columns
     let order_parts: Vec<String> = key_columns
         .iter()
-        .map(|k| format!("COALESCE(a.\"{k}\", b.\"{k}\")"))
+        .map(|k| format!("COALESCE(a.\"{k}\"::VARCHAR, b.\"{k}\"::VARCHAR)"))
         .collect();
     let order_by = order_parts.join(", ");
 
@@ -282,6 +286,28 @@ pub fn compute_diff(
         changed_cells.push(row_changes);
     }
 
+    // Build B-side batch from _b_* columns
+    let b_side_columns: Vec<Arc<dyn Array>> = b_col_map
+        .iter()
+        .map(|&(_, b_batch_idx)| full_batch.column(b_batch_idx).clone())
+        .collect();
+    let b_side_fields: Vec<_> = b_col_map
+        .iter()
+        .map(|&(_, b_batch_idx)| schema.fields()[b_batch_idx].clone())
+        .collect();
+    let b_side_schema = Arc::new(Schema::new(b_side_fields));
+    let b_side_batch = RecordBatch::try_new(b_side_schema, b_side_columns)
+        .context("Failed to build b_side batch")?;
+
+    // Build b_side_col_map: for each display column, Some(idx in b_side_batch) or None
+    let b_side_col_map: Vec<Option<usize>> = (0..num_display_cols)
+        .map(|display_idx| {
+            b_col_map
+                .iter()
+                .position(|&(a_idx, _)| a_idx == display_idx)
+        })
+        .collect();
+
     // Strip _b_* and _diff columns from the batch
     let display_columns: Vec<Arc<dyn Array>> = display_col_indices
         .iter()
@@ -302,5 +328,7 @@ pub fn compute_diff(
         markers,
         changed_cells,
         counts,
+        b_side_batch,
+        b_side_col_map,
     })
 }

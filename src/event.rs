@@ -122,6 +122,11 @@ pub enum Action {
     Filter(String),
     ResetFilter,
     ExecuteSql(String),
+    LoadBatch {
+        batch: RecordBatch,
+        schema: Arc<Schema>,
+        name: String,
+    },
     CollectMatches {
         term: String,
         is_regex: bool,

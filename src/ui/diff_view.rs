@@ -1,4 +1,5 @@
 use duckdb::arrow::compute::concat_batches;
+use duckdb::arrow::util::display::ArrayFormatter;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -20,17 +21,25 @@ impl<'a> DiffView<'a> {
 }
 
 /// Styler for diff view: marker-based prefix, changed-cell yellow, key cols cyan, common rows dim.
+///
+/// NOTE: `data_row` passed by `UnifiedTable` is already offset by `scroll_offset`
+/// (i.e. `data_row = scroll_offset + display_row`), so the styler must NOT add
+/// scroll_offset again.
 struct DiffStyler<'a> {
     markers: &'a [DiffMarker],
     changed_cells: &'a Vec<Vec<bool>>,
     key_col_indices: Vec<usize>,
     diff_col_indices: Vec<usize>,
-    scroll_offset: usize,
+    selected_col: usize,
+    /// The data_row index of the cursor (selected_row in batch coordinates).
+    selected_data_row: usize,
 }
 
 impl TableStyler for DiffStyler<'_> {
     fn col_header_style(&self, col_idx: usize, base: Style) -> Style {
-        if self.key_col_indices.contains(&col_idx) {
+        if col_idx == self.selected_col {
+            base.add_modifier(Modifier::REVERSED)
+        } else if self.key_col_indices.contains(&col_idx) {
             base.add_modifier(Modifier::UNDERLINED)
         } else {
             base
@@ -38,11 +47,10 @@ impl TableStyler for DiffStyler<'_> {
     }
 
     fn row_prefix(&self, data_row: usize) -> (&str, Style) {
-        let abs_row = self.scroll_offset + data_row;
-        if abs_row >= self.markers.len() {
+        if data_row >= self.markers.len() {
             return ("   ", Style::default());
         }
-        match self.markers[abs_row] {
+        match self.markers[data_row] {
             DiffMarker::OnlyA => (
                 " + ",
                 Style::default()
@@ -65,6 +73,14 @@ impl TableStyler for DiffStyler<'_> {
         }
     }
 
+    fn row_bg(&self, data_row: usize) -> Style {
+        if data_row == self.selected_data_row {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
+    }
+
     fn cell(
         &self,
         col_idx: usize,
@@ -73,13 +89,13 @@ impl TableStyler for DiffStyler<'_> {
         is_null: bool,
         _base: Style,
     ) -> (String, Style) {
-        let abs_row = self.scroll_offset + data_row;
-        let marker = if abs_row < self.markers.len() {
-            self.markers[abs_row]
+        let marker = if data_row < self.markers.len() {
+            self.markers[data_row]
         } else {
             DiffMarker::Common
         };
 
+        let is_selected_row = data_row == self.selected_data_row;
         let dim_style = Style::default().fg(Color::DarkGray);
         let base_style = match marker {
             DiffMarker::OnlyA => Style::default().fg(Color::Green),
@@ -94,21 +110,22 @@ impl TableStyler for DiffStyler<'_> {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
+            let style = if is_selected_row { style.bg(Color::DarkGray) } else { style };
             return ("NULL".to_string(), style);
         }
 
         let is_key = self.key_col_indices.contains(&col_idx);
         let is_diff = self.diff_col_indices.contains(&col_idx);
 
-        let style = if marker == DiffMarker::Common {
+        let mut style = if marker == DiffMarker::Common {
             dim_style
         } else if is_key {
             Style::default().fg(Color::Cyan)
         } else if is_diff
             && marker == DiffMarker::Changed
-            && abs_row < self.changed_cells.len()
-            && col_idx < self.changed_cells[abs_row].len()
-            && self.changed_cells[abs_row][col_idx]
+            && data_row < self.changed_cells.len()
+            && col_idx < self.changed_cells[data_row].len()
+            && self.changed_cells[data_row][col_idx]
         {
             Style::default()
                 .fg(Color::Yellow)
@@ -119,8 +136,65 @@ impl TableStyler for DiffStyler<'_> {
             base_style
         };
 
+        if is_selected_row {
+            style = style.bg(Color::DarkGray);
+        }
+
         (formatted.to_string(), style)
     }
+}
+
+/// Build the "old → new" preview string for the current cell, if it's a changed cell.
+fn build_cell_preview(app: &App) -> Option<String> {
+    let diff = &app.diff;
+    let data_row = diff.display_to_data_row(diff.selected_row);
+    let col = diff.selected_col;
+
+    // Check if this cell is actually changed
+    let is_changed = diff
+        .changed_cells
+        .get(data_row)
+        .and_then(|row| row.get(col))
+        .copied()
+        .unwrap_or(false);
+    if !is_changed {
+        return None;
+    }
+
+    let schema = diff.schema.as_ref()?;
+    let batch = diff.batch.as_ref()?;
+    let b_side_batch = diff.b_side_batch.as_ref()?;
+    let b_side_idx = diff.b_side_col_map.get(col)?.as_ref().copied()?;
+
+    if data_row >= batch.num_rows() {
+        return None;
+    }
+
+    let col_name = schema.fields()[col].name();
+
+    // Get B-side (old) value
+    let b_col = b_side_batch.column(b_side_idx);
+    let old_val = if b_col.is_null(data_row) {
+        "NULL".to_string()
+    } else {
+        ArrayFormatter::try_new(b_col.as_ref(), &Default::default())
+            .ok()
+            .map(|f| f.value(data_row).to_string())
+            .unwrap_or_default()
+    };
+
+    // Get A-side (new) value
+    let a_col = batch.column(col);
+    let new_val = if a_col.is_null(data_row) {
+        "NULL".to_string()
+    } else {
+        ArrayFormatter::try_new(a_col.as_ref(), &Default::default())
+            .ok()
+            .map(|f| f.value(data_row).to_string())
+            .unwrap_or_default()
+    };
+
+    Some(format!("{}: \"{}\" → \"{}\"", col_name, old_val, new_val))
 }
 
 impl Widget for DiffView<'_> {
@@ -193,11 +267,20 @@ impl Widget for DiffView<'_> {
         );
         buf.set_string(area.x, header_y, &header_text, header_style);
 
-        // Scroll position indicator
+        // Right side of header: cell preview or position indicator
         if visible_count > 0 {
-            let pos_text = format!(" {}/{} ", diff.scroll_offset + 1, visible_count);
-            let pos_x = area.x + area.width - pos_text.width() as u16;
-            buf.set_string(pos_x, header_y, &pos_text, header_style);
+            let preview = build_cell_preview(self.app);
+            let right_text = if let Some(ref pv) = preview {
+                let pos = format!("{}/{}", diff.selected_row + 1, visible_count);
+                format!(" {} | {} ", pv, pos)
+            } else {
+                format!(" {}/{} ", diff.selected_row + 1, visible_count)
+            };
+            let right_w = right_text.width() as u16;
+            if right_w < area.width {
+                let pos_x = area.x + area.width - right_w;
+                buf.set_string(pos_x, header_y, &right_text, header_style);
+            }
         }
 
         let fields = schema.fields();
@@ -241,12 +324,16 @@ impl Widget for DiffView<'_> {
             .map(|(i, _)| i)
             .collect();
 
+        // selected_row in batch/render coordinates (for row_bg highlight)
+        let selected_data_row = diff.selected_row;
+
         let styler = DiffStyler {
             markers: markers_ref,
             changed_cells: changed_ref,
             key_col_indices,
             diff_col_indices,
-            scroll_offset,
+            selected_col: diff.selected_col,
+            selected_data_row,
         };
 
         // Table area starts below the cyan header bar
