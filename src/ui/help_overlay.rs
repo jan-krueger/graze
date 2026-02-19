@@ -83,7 +83,8 @@ impl Widget for HelpOverlay<'_> {
         let footer = "Press Esc or ? to close";
         let content_width = max_key_width + 3 + max_desc_width + 4; // padding
 
-        let popup = Popup::new(title, footer, content_width, total_lines);
+        let theme = &self.app.theme;
+        let popup = Popup::new(title, footer, content_width, total_lines, theme);
         let inner = popup.render_frame(area, buf);
 
         let section_style = Style::default()
@@ -92,7 +93,7 @@ impl Widget for HelpOverlay<'_> {
         let key_style = Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD);
-        let desc_style = Style::default().fg(Color::White);
+        let desc_style = Style::default().fg(theme.fg);
 
         let mut y = inner.y;
         let max_y = inner.y + inner.height;

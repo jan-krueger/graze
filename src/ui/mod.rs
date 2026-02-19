@@ -9,10 +9,11 @@ pub mod status_bar;
 pub mod tab_bar;
 pub mod table;
 pub mod table_render;
+pub mod theme;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
 use crate::app::{App, AppMode};
@@ -92,8 +93,10 @@ impl Widget for AppView<'_> {
                 self.app.sql.result.as_ref(),
             ) {
                 use crate::ui::table_render::{DefaultStyler, UnifiedTable};
-                let styler = DefaultStyler;
-                UnifiedTable::new(schema, batch, &styler).render(chunks[0], buf);
+                let styler = DefaultStyler { theme: &self.app.theme };
+                UnifiedTable::new(schema, batch, &styler)
+                    .theme(&self.app.theme)
+                    .render(chunks[0], buf);
             } else {
                 TableView::new(self.app).render(chunks[0], buf);
             }
@@ -101,13 +104,13 @@ impl Widget for AppView<'_> {
             StatusBar::new(self.app).render(chunks[2], buf);
         } else if show_input_bar {
             TableView::new(self.app).render(chunks[0], buf);
-            let (prompt, color) = match self.app.mode {
-                AppMode::Regex => ("Regex:  ", Color::Magenta),
-                AppMode::Filter => ("Filter: ", Color::Green),
-                AppMode::GoToRow => ("Goto:   ", Color::Blue),
-                _ => ("Search: ", Color::Yellow),
+            let prompt = match self.app.mode {
+                AppMode::Regex => "Regex:  ",
+                AppMode::Filter => "Filter: ",
+                AppMode::GoToRow => "Goto:   ",
+                _ => "Search: ",
             };
-            InputBar::new(prompt, color, &self.app.tab().filter.input)
+            InputBar::new(self.app, prompt, &self.app.tab().filter.input)
                 .render(chunks[1], buf);
             StatusBar::new(self.app).render(chunks[2], buf);
             if self.app.mode == AppMode::Filter {
@@ -169,8 +172,9 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     let popup_height = visible_count as u16;
     let popup_y = filter_bar_y.saturating_sub(popup_height);
 
-    let bg_style = Style::default().fg(Color::White).bg(Color::Black);
-    let selected_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let theme = &app.theme;
+    let bg_style = Style::default().fg(theme.fg).bg(theme.bg);
+    let selected_style = Style::default().fg(theme.fg).bg(theme.selected_bg);
 
     for (i, suggestion) in app
         .tab()

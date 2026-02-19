@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::state::DiffMarker;
 use crate::ui::table_render::{TableStyler, UnifiedTable};
+use crate::ui::theme::Theme;
 
 pub struct DiffView<'a> {
     app: &'a App,
@@ -33,6 +34,7 @@ struct DiffStyler<'a> {
     selected_col: usize,
     /// The data_row index of the cursor (selected_row in batch coordinates).
     selected_data_row: usize,
+    theme: &'a Theme,
 }
 
 impl TableStyler for DiffStyler<'_> {
@@ -54,28 +56,28 @@ impl TableStyler for DiffStyler<'_> {
             DiffMarker::OnlyA => (
                 " + ",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(self.theme.diff_added)
                     .add_modifier(Modifier::BOLD),
             ),
             DiffMarker::OnlyB => (
                 " - ",
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(self.theme.diff_removed)
                     .add_modifier(Modifier::BOLD),
             ),
             DiffMarker::Changed => (
                 " ~ ",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(self.theme.diff_changed)
                     .add_modifier(Modifier::BOLD),
             ),
-            DiffMarker::Common => ("   ", Style::default().fg(Color::DarkGray)),
+            DiffMarker::Common => ("   ", Style::default().fg(self.theme.dim)),
         }
     }
 
     fn row_bg(&self, data_row: usize) -> Style {
         if data_row == self.selected_data_row {
-            Style::default().bg(Color::DarkGray)
+            Style::default().bg(self.theme.selected_bg)
         } else {
             Style::default()
         }
@@ -96,11 +98,11 @@ impl TableStyler for DiffStyler<'_> {
         };
 
         let is_selected_row = data_row == self.selected_data_row;
-        let dim_style = Style::default().fg(Color::DarkGray);
+        let dim_style = Style::default().fg(self.theme.dim);
         let base_style = match marker {
-            DiffMarker::OnlyA => Style::default().fg(Color::Green),
-            DiffMarker::OnlyB => Style::default().fg(Color::Red),
-            DiffMarker::Changed => Style::default().fg(Color::White),
+            DiffMarker::OnlyA => Style::default().fg(self.theme.diff_added),
+            DiffMarker::OnlyB => Style::default().fg(self.theme.diff_removed),
+            DiffMarker::Changed => Style::default().fg(self.theme.fg),
             DiffMarker::Common => dim_style,
         };
 
@@ -108,9 +110,9 @@ impl TableStyler for DiffStyler<'_> {
             let style = if marker == DiffMarker::Common {
                 dim_style
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(self.theme.null_fg)
             };
-            let style = if is_selected_row { style.bg(Color::DarkGray) } else { style };
+            let style = if is_selected_row { style.bg(self.theme.selected_bg) } else { style };
             return ("NULL".to_string(), style);
         }
 
@@ -120,7 +122,7 @@ impl TableStyler for DiffStyler<'_> {
         let mut style = if marker == DiffMarker::Common {
             dim_style
         } else if is_key {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.header_fg)
         } else if is_diff
             && marker == DiffMarker::Changed
             && data_row < self.changed_cells.len()
@@ -128,7 +130,7 @@ impl TableStyler for DiffStyler<'_> {
             && self.changed_cells[data_row][col_idx]
         {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(self.theme.diff_changed)
                 .add_modifier(Modifier::BOLD)
         } else if !is_diff && !is_key {
             dim_style
@@ -137,7 +139,7 @@ impl TableStyler for DiffStyler<'_> {
         };
 
         if is_selected_row {
-            style = style.bg(Color::DarkGray);
+            style = style.bg(self.theme.selected_bg);
         }
 
         (formatted.to_string(), style)
@@ -204,12 +206,13 @@ impl Widget for DiffView<'_> {
         }
 
         let diff = &self.app.diff;
+        let theme = &self.app.theme;
 
         // Header bar (1 row)
         let header_y = area.y;
         let header_style = Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
+            .bg(theme.diff_header_bg)
+            .fg(theme.diff_header_fg)
             .add_modifier(Modifier::BOLD);
 
         buf.set_string(
@@ -334,6 +337,7 @@ impl Widget for DiffView<'_> {
             diff_col_indices,
             selected_col: diff.selected_col,
             selected_data_row,
+            theme,
         };
 
         // Table area starts below the cyan header bar

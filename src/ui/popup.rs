@@ -3,9 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-const BORDER_STYLE: Style = Style::new().fg(Color::Cyan);
-const TITLE_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const DIM_STYLE: Style = Style::new().fg(Color::DarkGray);
+use super::theme::Theme;
 
 /// A centered popup frame with title, footer, and bordered content area.
 ///
@@ -20,6 +18,9 @@ pub struct Popup<'a> {
     footer: &'a str,
     inner_width: usize,
     inner_height: usize,
+    border_color: Color,
+    title_color: Color,
+    dim_color: Color,
 }
 
 impl<'a> Popup<'a> {
@@ -28,12 +29,16 @@ impl<'a> Popup<'a> {
         footer: &'a str,
         inner_width: usize,
         inner_height: usize,
+        theme: &Theme,
     ) -> Self {
         Self {
             title,
             footer,
             inner_width,
             inner_height,
+            border_color: theme.popup_border,
+            title_color: theme.popup_title,
+            dim_color: theme.dim,
         }
     }
 
@@ -43,6 +48,10 @@ impl<'a> Popup<'a> {
     /// The inner rect has width = `inner_width` and is positioned inside the borders.
     /// Callers should use `render_row()` to draw individual content rows with side borders.
     pub fn render_frame(&self, area: Rect, buf: &mut Buffer) -> Rect {
+        let border_style = Style::new().fg(self.border_color);
+        let title_style = Style::new().fg(self.title_color).add_modifier(Modifier::BOLD);
+        let dim_style = Style::new().fg(self.dim_color);
+
         let popup_width = self
             .inner_width
             .max(self.title.width() + 4)
@@ -71,26 +80,26 @@ impl<'a> Popup<'a> {
             self.title,
             "\u{2500}".repeat(popup_width.saturating_sub(self.title.width() + 4))
         );
-        buf.set_string(popup_x, popup_y, &top_border, BORDER_STYLE);
-        buf.set_string(popup_x + 3, popup_y, self.title, TITLE_STYLE);
+        buf.set_string(popup_x, popup_y, &top_border, border_style);
+        buf.set_string(popup_x + 3, popup_y, self.title, title_style);
 
         // Blank line after title
         let bordered_blank = format!("\u{2502}{}\u{2502}", " ".repeat(popup_width));
-        buf.set_string(popup_x, popup_y + 1, &bordered_blank, BORDER_STYLE);
+        buf.set_string(popup_x, popup_y + 1, &bordered_blank, border_style);
 
         // Content rows get side borders
         for i in 0..content_height {
             let y = popup_y + 2 + i as u16;
-            buf.set_string(popup_x, y, "\u{2502}", BORDER_STYLE);
+            buf.set_string(popup_x, y, "\u{2502}", border_style);
             let right_x = popup_x + popup_width as u16 + 1;
             if right_x < area.x + area.width {
-                buf.set_string(right_x, y, "\u{2502}", BORDER_STYLE);
+                buf.set_string(right_x, y, "\u{2502}", border_style);
             }
         }
 
         // Blank line before footer
         let footer_blank_y = popup_y + 2 + content_height as u16;
-        buf.set_string(popup_x, footer_blank_y, &bordered_blank, BORDER_STYLE);
+        buf.set_string(popup_x, footer_blank_y, &bordered_blank, border_style);
 
         // Bottom border: └ footer ───┘
         let bottom_y = footer_blank_y + 1;
@@ -99,8 +108,8 @@ impl<'a> Popup<'a> {
             self.footer,
             "\u{2500}".repeat(popup_width.saturating_sub(self.footer.width() + 3))
         );
-        buf.set_string(popup_x, bottom_y, &footer_padded, BORDER_STYLE);
-        buf.set_string(popup_x + 2, bottom_y, self.footer, DIM_STYLE);
+        buf.set_string(popup_x, bottom_y, &footer_padded, border_style);
+        buf.set_string(popup_x + 2, bottom_y, self.footer, dim_style);
 
         // Return inner content rect (inside the borders, below the blank line)
         Rect {

@@ -53,12 +53,13 @@ impl Widget for ColumnPicker<'_> {
         let max_visible = (area.height as usize).saturating_sub(6);
         let visible_rows = setup.columns.len().min(max_visible).max(1);
 
-        let popup = Popup::new(title, footer, content_width, visible_rows);
+        let theme = &self.app.theme;
+        let popup = Popup::new(title, footer, content_width, visible_rows, theme);
         let inner = popup.render_frame(area, buf);
 
-        let normal_style = Style::default().fg(Color::White);
-        let selected_style = Style::default().fg(Color::White).bg(Color::DarkGray);
-        let dim_style = Style::default().fg(Color::DarkGray);
+        let normal_style = Style::default().fg(theme.fg);
+        let selected_style = Style::default().fg(theme.fg).bg(theme.selected_bg);
+        let dim_style = Style::default().fg(theme.dim);
         let check_style = Style::default().fg(Color::Green);
 
         let scroll_start = if setup.cursor >= visible_rows {

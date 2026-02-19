@@ -24,6 +24,7 @@ impl Widget for SqlPad<'_> {
             return;
         }
 
+        let theme = &self.app.theme;
         let header_y = area.y;
         let input_start_y = area.y + 1;
         let input_lines = (area.height - 1) as usize;
@@ -67,10 +68,10 @@ impl Widget for SqlPad<'_> {
         }
 
         // --- Input lines ---
-        let input_bg = Style::default().bg(Color::Black).fg(Color::White);
+        let input_bg = Style::default().bg(theme.input_bg).fg(theme.input_fg);
         let line_num_style = Style::default()
-            .bg(Color::Black)
-            .fg(Color::DarkGray);
+            .bg(theme.input_bg)
+            .fg(theme.dim);
 
         for i in 0..input_lines {
             let y = input_start_y + i as u16;

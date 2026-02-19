@@ -7,7 +7,8 @@ use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
-use crate::ui::table_render::{type_color, TableStyler, UnifiedTable};
+use crate::ui::table_render::{TableStyler, UnifiedTable};
+use crate::ui::theme::Theme;
 
 pub struct StatsOverlay<'a> {
     app: &'a App,
@@ -20,15 +21,16 @@ impl<'a> StatsOverlay<'a> {
 }
 
 /// Styler for stats: alternating row colors, column_name in cyan, column_type with arrow type overrides.
-struct StatsStyler {
+struct StatsStyler<'a> {
     column_name_idx: Option<usize>,
     column_type_idx: Option<usize>,
     arrow_type_overrides: Vec<Option<String>>,
     row_type_colors: Vec<Option<Color>>,
     scroll_offset: usize,
+    theme: &'a Theme,
 }
 
-impl TableStyler for StatsStyler {
+impl TableStyler for StatsStyler<'_> {
     fn row_prefix(&self, _data_row: usize) -> (&str, Style) {
         (" ", Style::default())
     }
@@ -38,7 +40,7 @@ impl TableStyler for StatsStyler {
         if abs_row % 2 == 0 {
             Style::default()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(self.theme.fg)
         }
     }
 
@@ -51,7 +53,7 @@ impl TableStyler for StatsStyler {
         base: Style,
     ) -> (String, Style) {
         if is_null {
-            return ("NULL".to_string(), Style::default().fg(Color::DarkGray));
+            return ("NULL".to_string(), Style::default().fg(self.theme.null_fg));
         }
 
         let abs_row = self.scroll_offset + data_row;
@@ -67,7 +69,7 @@ impl TableStyler for StatsStyler {
         }
 
         if self.column_name_idx == Some(col_idx) {
-            return (formatted.to_string(), base.fg(Color::Cyan));
+            return (formatted.to_string(), base.fg(self.theme.header_fg));
         }
 
         (formatted.to_string(), base)
@@ -80,11 +82,12 @@ impl Widget for StatsOverlay<'_> {
             return;
         }
 
+        let theme = &self.app.theme;
         let header_y = area.y;
 
         let header_style = Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::Black)
+            .bg(theme.diff_header_bg)
+            .fg(theme.diff_header_fg)
             .add_modifier(Modifier::BOLD);
 
         buf.set_string(
@@ -172,7 +175,7 @@ impl Widget for StatsOverlay<'_> {
                         };
                         let field = name.and_then(|n| app_schema.field_with_name(n).ok());
                         let type_str = field.map(|f| format!("{}", f.data_type()));
-                        let color = field.map(|f| type_color(f.data_type()));
+                        let color = field.map(|f| theme.type_color(f.data_type()));
                         (type_str, color)
                     })
                     .unzip()
@@ -208,6 +211,7 @@ impl Widget for StatsOverlay<'_> {
             arrow_type_overrides,
             row_type_colors,
             scroll_offset,
+            theme,
         };
 
         // Table area starts below the cyan header bar

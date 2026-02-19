@@ -20,6 +20,7 @@ use crate::state::{
     DiffState, SqlState, StatsState, TabState,
 };
 use crate::ui::AppView;
+use crate::ui::theme::Theme;
 use crate::worker::Worker;
 
 const BUFFER_MULTIPLIER: usize = 5;
@@ -226,6 +227,7 @@ pub struct App {
     pub diff: DiffState,
     pub status_message: Option<String>,
     pub tick: usize,
+    pub theme: Theme,
     action_txs: Vec<Sender<Action>>,
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
@@ -240,7 +242,7 @@ impl App {
 }
 
 impl App {
-    pub fn new(file_paths: Vec<PathBuf>) -> Result<Self> {
+    pub fn new(file_paths: Vec<PathBuf>, theme: Theme) -> Result<Self> {
         let (term_tx, term_rx) = mpsc::channel::<TermEvent>();
 
         // Spawn event thread
@@ -277,6 +279,7 @@ impl App {
             diff: DiffState::new(),
             status_message: Some("Loading...".to_string()),
             tick: 0,
+            theme,
             action_txs,
             data_rxs,
             term_rx,

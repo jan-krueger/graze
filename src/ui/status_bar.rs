@@ -19,7 +19,8 @@ impl<'a> StatusBar<'a> {
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let tab = self.app.tab();
-        let bg_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+        let theme = &self.app.theme;
+        let bg_style = Style::default().bg(theme.status_bg).fg(theme.status_fg);
 
         buf.set_string(
             area.x,
@@ -43,8 +44,8 @@ impl Widget for StatusBar<'_> {
             };
             let sel_style = match tab.viewport.selection_mode {
                 SelectionMode::Row => Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::White)
+                    .bg(theme.status_bg)
+                    .fg(theme.status_fg)
                     .add_modifier(Modifier::BOLD),
                 SelectionMode::Column => Style::default()
                     .bg(Color::Yellow)

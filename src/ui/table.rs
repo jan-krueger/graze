@@ -189,12 +189,17 @@ struct NormalStyler {
     highlight_col_idx: Option<usize>,
     /// Buffer-relative row index of the current search match (for distinct highlighting).
     current_match_data_row: Option<usize>,
+    // Theme colors
+    selected_bg: Color,
+    null_fg: Color,
+    search_match_fg: Color,
+    search_match_bg: Color,
 }
 
 impl TableStyler for NormalStyler {
     fn col_header_style(&self, col_idx: usize, base: Style) -> Style {
         if self.col_select_active && col_idx == self.selected_col {
-            base.bg(Color::DarkGray)
+            base.bg(self.selected_bg)
         } else {
             base
         }
@@ -204,7 +209,7 @@ impl TableStyler for NormalStyler {
         let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
         if show_highlight {
-            (">> ", Style::default().bg(Color::DarkGray).fg(Color::Yellow))
+            (">> ", Style::default().bg(self.selected_bg).fg(Color::Yellow))
         } else {
             ("   ", Style::default())
         }
@@ -214,7 +219,7 @@ impl TableStyler for NormalStyler {
         let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
         if show_highlight {
-            Style::default().bg(Color::DarkGray)
+            Style::default().bg(self.selected_bg)
         } else {
             Style::default()
         }
@@ -230,17 +235,15 @@ impl TableStyler for NormalStyler {
     ) -> (String, Style) {
         let is_col_selected = self.col_select_active && col_idx == self.selected_col;
         let base_style = if is_col_selected {
-            Style::default().bg(Color::DarkGray)
+            Style::default().bg(self.selected_bg)
         } else {
             base
         };
 
         if is_null {
-            return ("NULL".to_string(), base_style.fg(Color::DarkGray));
+            return ("NULL".to_string(), base_style.fg(self.null_fg));
         }
 
-        // We need the actual formatted value for filter/search matching
-        // The formatted value is passed in, but for "?" fallback we use what's given
         let val = formatted;
 
         let mut style = if is_col_selected {
@@ -263,11 +266,11 @@ impl TableStyler for NormalStyler {
             if matcher.is_match(val) {
                 if self.current_match_data_row == Some(data_row) {
                     style = Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
+                        .fg(self.search_match_fg)
+                        .bg(self.search_match_bg)
                         .add_modifier(ratatui::style::Modifier::BOLD);
                 } else {
-                    style = style.fg(Color::Yellow).bg(Color::Black);
+                    style = style.fg(Color::Yellow).bg(self.search_match_fg);
                 }
             }
         }
@@ -289,6 +292,7 @@ impl<'a> TableView<'a> {
 impl Widget for TableView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let tab = self.app.tab();
+        let theme = &self.app.theme;
         let schema = match tab.data.schema.as_ref() {
             Some(s) => s,
             None => return,
@@ -316,7 +320,7 @@ impl Widget for TableView<'_> {
                 y,
                 &msg,
                 ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::DarkGray)
+                    .fg(theme.dim)
                     .add_modifier(ratatui::style::Modifier::ITALIC),
             );
             return;
@@ -362,6 +366,10 @@ impl Widget for TableView<'_> {
             simple_filter,
             highlight_col_idx,
             current_match_data_row,
+            selected_bg: theme.selected_bg,
+            null_fg: theme.null_fg,
+            search_match_fg: theme.search_match_fg,
+            search_match_bg: theme.search_match_bg,
         };
 
         // Build per-column width overrides
@@ -395,7 +403,8 @@ impl Widget for TableView<'_> {
             .sort_state(&tab.data.sort_state)
             .max_col_width(global_max)
             .col_width_caps(&col_caps)
-            .row_numbers(tab.data.buffer_offset, tab.data.total_rows);
+            .row_numbers(tab.data.buffer_offset, tab.data.total_rows)
+            .theme(theme);
 
         if !col_mins.is_empty() {
             table = table.col_width_mins(&col_mins);

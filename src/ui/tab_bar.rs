@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::app::App;
@@ -17,7 +17,8 @@ impl<'a> TabBar<'a> {
 
 impl Widget for TabBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+        let theme = &self.app.theme;
+        let bg_style = Style::default().bg(theme.bg).fg(theme.dim);
 
         // Fill background
         buf.set_string(
@@ -28,12 +29,12 @@ impl Widget for TabBar<'_> {
         );
 
         let active_style = Style::default()
-            .bg(Color::Blue)
-            .fg(Color::White)
+            .bg(theme.tab_active_bg)
+            .fg(theme.tab_active_fg)
             .add_modifier(Modifier::BOLD);
         let inactive_style = Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::White);
+            .bg(theme.tab_inactive_bg)
+            .fg(theme.tab_inactive_fg);
 
         let mut x = area.x;
         for (i, tab) in self.app.tabs.iter().enumerate() {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use duckdb::arrow::array::Array;
-use duckdb::arrow::datatypes::{DataType, Schema};
+use duckdb::arrow::datatypes::Schema;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::arrow::util::display::ArrayFormatter;
 use ratatui::buffer::Buffer;
@@ -11,6 +11,7 @@ use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use crate::event::SortState;
+use super::theme::Theme;
 
 pub const DEFAULT_MAX_COL_WIDTH: u16 = 50;
 pub const ROW_PREFIX_WIDTH: usize = 3; // ">> " or "   "
@@ -21,41 +22,6 @@ pub fn gutter_width(total_rows: usize) -> usize {
         2
     } else {
         (total_rows as f64).log10() as usize + 2
-    }
-}
-
-/// Map an Arrow DataType to a display color by category.
-pub fn type_color(data_type: &DataType) -> Color {
-    match data_type {
-        DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64
-        | DataType::Float16
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Decimal128(_, _)
-        | DataType::Decimal256(_, _) => Color::Green,
-
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Color::Yellow,
-
-        DataType::Boolean => Color::Magenta,
-
-        DataType::Date32
-        | DataType::Date64
-        | DataType::Timestamp(_, _)
-        | DataType::Time32(_)
-        | DataType::Time64(_)
-        | DataType::Duration(_)
-        | DataType::Interval(_) => Color::Blue,
-
-        DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => Color::Red,
-
-        _ => Color::White,
     }
 }
 
@@ -220,9 +186,11 @@ pub trait TableStyler {
 }
 
 /// Trivial styler: NULL in gray, no highlighting. Used by SQL results.
-pub struct DefaultStyler;
+pub struct DefaultStyler<'a> {
+    pub theme: &'a Theme,
+}
 
-impl TableStyler for DefaultStyler {
+impl TableStyler for DefaultStyler<'_> {
     fn row_prefix(&self, _data_row: usize) -> (&str, Style) {
         ("   ", Style::default())
     }
@@ -236,7 +204,7 @@ impl TableStyler for DefaultStyler {
         base: Style,
     ) -> (String, Style) {
         if is_null {
-            ("NULL".to_string(), base.fg(Color::DarkGray))
+            ("NULL".to_string(), base.fg(self.theme.null_fg))
         } else {
             (formatted.to_string(), base)
         }
@@ -263,6 +231,8 @@ pub struct UnifiedTable<'a> {
     /// When set, render 1-based row numbers in a left gutter.
     /// Value is (absolute_row_of_first_batch_row, total_rows) for width calculation.
     row_numbers: Option<(usize, usize)>,
+    /// Theme for colors.
+    theme: Option<&'a Theme>,
 }
 
 impl<'a> UnifiedTable<'a> {
@@ -285,6 +255,7 @@ impl<'a> UnifiedTable<'a> {
             hidden: None,
             col_width_caps: None,
             row_numbers: None,
+            theme: None,
         }
     }
 
@@ -343,6 +314,11 @@ impl<'a> UnifiedTable<'a> {
         self.row_numbers = Some((base, total_rows));
         self
     }
+
+    pub fn theme(mut self, theme: &'a Theme) -> Self {
+        self.theme = Some(theme);
+        self
+    }
 }
 
 impl Widget for UnifiedTable<'_> {
@@ -350,6 +326,10 @@ impl Widget for UnifiedTable<'_> {
         if area.height < 2 || area.width < 4 {
             return;
         }
+
+        // Use theme if provided, otherwise fall back to dark defaults
+        let default_theme = Theme::dark();
+        let theme = self.theme.unwrap_or(&default_theme);
 
         let batch_rows = self.batch.num_rows();
         let fields = self.schema.fields();
@@ -423,13 +403,13 @@ impl Widget for UnifiedTable<'_> {
             return;
         }
 
-        let gutter_style = Style::default().fg(Color::DarkGray);
+        let gutter_style = Style::default().fg(theme.gutter_fg);
         let num_col_width = gutter_w.saturating_sub(1); // digits only, no separator
 
         // --- Render header row ---
         let header_y = area.y;
         let header_style = Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.header_fg)
             .add_modifier(Modifier::BOLD);
 
         buf.set_string(
@@ -463,7 +443,7 @@ impl Widget for UnifiedTable<'_> {
                 let mut cx = x + name_part.width() as u16;
 
                 let type_str = format!("{}", field.data_type()).to_lowercase();
-                let tc = type_color(field.data_type());
+                let tc = theme.type_color(field.data_type());
                 let type_style = self.styler.col_header_style(
                     col_idx,
                     Style::default().fg(tc).add_modifier(Modifier::BOLD),
@@ -529,7 +509,7 @@ impl Widget for UnifiedTable<'_> {
                 let abs_row = row_num_base + data_row + 1; // 1-based
                 let num_str = format!("{:>width$} ", abs_row, width = num_col_width);
                 // Use the row background to detect selection and pick a readable color
-                let num_style = if row_bg.bg == Some(Color::DarkGray) {
+                let num_style = if row_bg.bg == Some(theme.selected_bg) {
                     row_bg.fg(Color::Yellow)
                 } else {
                     gutter_style
