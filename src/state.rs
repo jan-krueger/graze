@@ -355,11 +355,16 @@ impl DiffSetup {
 
 /// Full diff view state.
 pub struct DiffState {
-    pub batch: Option<RecordBatch>,
+    pub backend: Option<crate::diff::DiffBackend>,
+    pub page: Option<crate::diff::DiffPageData>,
     pub schema: Option<Arc<Schema>>,
     pub markers: Vec<DiffMarker>,
-    pub changed_cells: Vec<Vec<bool>>,
     pub counts: DiffCounts,
+    pub total_rows: usize,
+    /// Indices of all non-Common data rows (for n/N navigation).
+    pub changed_row_indices: Vec<usize>,
+    /// For each display column: Some(idx in b_side_batch) if it's a diff col, None otherwise.
+    pub b_side_col_map: Vec<Option<usize>>,
     pub loading: bool,
     pub error: Option<String>,
     /// Viewport start (first visible display row).
@@ -376,20 +381,19 @@ pub struct DiffState {
     pub hide_common: bool,
     /// Indices of visible rows when `hide_common` is true (non-Common rows).
     pub visible_rows: Vec<usize>,
-    /// B-side values for diff columns (row-aligned with main batch).
-    pub b_side_batch: Option<RecordBatch>,
-    /// For each display column: Some(idx in b_side_batch) if it's a diff col, None otherwise.
-    pub b_side_col_map: Vec<Option<usize>>,
 }
 
 impl DiffState {
     pub fn new() -> Self {
         Self {
-            batch: None,
+            backend: None,
+            page: None,
             schema: None,
             markers: Vec::new(),
-            changed_cells: Vec::new(),
             counts: DiffCounts::default(),
+            total_rows: 0,
+            changed_row_indices: Vec::new(),
+            b_side_col_map: Vec::new(),
             loading: false,
             error: None,
             scroll_offset: 0,
@@ -403,8 +407,6 @@ impl DiffState {
             setup: DiffSetup::new(),
             hide_common: false,
             visible_rows: Vec::new(),
-            b_side_batch: None,
-            b_side_col_map: Vec::new(),
         }
     }
 
@@ -428,7 +430,7 @@ impl DiffState {
         if self.hide_common {
             self.visible_rows.len()
         } else {
-            self.batch.as_ref().map_or(0, |b| b.num_rows())
+            self.total_rows
         }
     }
 

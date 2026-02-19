@@ -1,4 +1,3 @@
-use duckdb::arrow::compute::concat_batches;
 use duckdb::arrow::util::display::ArrayFormatter;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -7,6 +6,7 @@ use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+use crate::diff::DiffPageData;
 use crate::state::DiffMarker;
 use crate::ui::table_render::{TableStyler, UnifiedTable};
 use crate::ui::theme::Theme;
@@ -23,18 +23,27 @@ impl<'a> DiffView<'a> {
 
 /// Styler for diff view: marker-based prefix, changed-cell yellow, key cols cyan, common rows dim.
 ///
-/// NOTE: `data_row` passed by `UnifiedTable` is already offset by `scroll_offset`
-/// (i.e. `data_row = scroll_offset + display_row`), so the styler must NOT add
-/// scroll_offset again.
+/// In the paginated design, `data_row` passed by `UnifiedTable` is an offset into the
+/// render batch. We use `row_indices` to map it back to the original data row for
+/// marker/changed_cells lookups.
 struct DiffStyler<'a> {
     markers: &'a [DiffMarker],
-    changed_cells: &'a Vec<Vec<bool>>,
+    changed_cells: &'a [Vec<bool>],
+    /// Maps render batch row → data row index.
+    row_indices: &'a [usize],
     key_col_indices: Vec<usize>,
     diff_col_indices: Vec<usize>,
     selected_col: usize,
-    /// The data_row index of the cursor (selected_row in batch coordinates).
-    selected_data_row: usize,
+    /// The render batch row index of the cursor.
+    selected_batch_row: usize,
     theme: &'a Theme,
+}
+
+impl DiffStyler<'_> {
+    /// Map a render batch row to its data row index.
+    fn data_row(&self, batch_row: usize) -> usize {
+        self.row_indices.get(batch_row).copied().unwrap_or(0)
+    }
 }
 
 impl TableStyler for DiffStyler<'_> {
@@ -49,10 +58,11 @@ impl TableStyler for DiffStyler<'_> {
     }
 
     fn row_prefix(&self, data_row: usize) -> (&str, Style) {
-        if data_row >= self.markers.len() {
+        let actual = self.data_row(data_row);
+        if actual >= self.markers.len() {
             return ("   ", Style::default());
         }
-        match self.markers[data_row] {
+        match self.markers[actual] {
             DiffMarker::OnlyA => (
                 " + ",
                 Style::default()
@@ -76,7 +86,7 @@ impl TableStyler for DiffStyler<'_> {
     }
 
     fn row_bg(&self, data_row: usize) -> Style {
-        if data_row == self.selected_data_row {
+        if data_row == self.selected_batch_row {
             Style::default().bg(self.theme.selected_bg)
         } else {
             Style::default()
@@ -91,13 +101,14 @@ impl TableStyler for DiffStyler<'_> {
         is_null: bool,
         _base: Style,
     ) -> (String, Style) {
-        let marker = if data_row < self.markers.len() {
-            self.markers[data_row]
+        let actual = self.data_row(data_row);
+        let marker = if actual < self.markers.len() {
+            self.markers[actual]
         } else {
             DiffMarker::Common
         };
 
-        let is_selected_row = data_row == self.selected_data_row;
+        let is_selected_row = data_row == self.selected_batch_row;
         let dim_style = Style::default().fg(self.theme.dim);
         let base_style = match marker {
             DiffMarker::OnlyA => Style::default().fg(self.theme.diff_added),
@@ -119,16 +130,18 @@ impl TableStyler for DiffStyler<'_> {
         let is_key = self.key_col_indices.contains(&col_idx);
         let is_diff = self.diff_col_indices.contains(&col_idx);
 
+        // Use batch-local changed_cells (indexed by batch row, not data row)
+        let cell_changed = is_diff
+            && marker == DiffMarker::Changed
+            && data_row < self.changed_cells.len()
+            && col_idx < self.changed_cells[data_row].len()
+            && self.changed_cells[data_row][col_idx];
+
         let mut style = if marker == DiffMarker::Common {
             dim_style
         } else if is_key {
             Style::default().fg(self.theme.header_fg)
-        } else if is_diff
-            && marker == DiffMarker::Changed
-            && data_row < self.changed_cells.len()
-            && col_idx < self.changed_cells[data_row].len()
-            && self.changed_cells[data_row][col_idx]
-        {
+        } else if cell_changed {
             Style::default()
                 .fg(self.theme.diff_changed)
                 .add_modifier(Modifier::BOLD)
@@ -152,10 +165,16 @@ fn build_cell_preview(app: &App) -> Option<String> {
     let data_row = diff.display_to_data_row(diff.selected_row);
     let col = diff.selected_col;
 
+    let schema = diff.schema.as_ref()?;
+    let page = diff.page.as_ref()?;
+
+    // Find this data_row in the page
+    let batch_row = page.row_indices.iter().position(|&r| r == data_row)?;
+
     // Check if this cell is actually changed
-    let is_changed = diff
+    let is_changed = page
         .changed_cells
-        .get(data_row)
+        .get(batch_row)
         .and_then(|row| row.get(col))
         .copied()
         .unwrap_or(false);
@@ -163,40 +182,79 @@ fn build_cell_preview(app: &App) -> Option<String> {
         return None;
     }
 
-    let schema = diff.schema.as_ref()?;
-    let batch = diff.batch.as_ref()?;
-    let b_side_batch = diff.b_side_batch.as_ref()?;
     let b_side_idx = diff.b_side_col_map.get(col)?.as_ref().copied()?;
 
-    if data_row >= batch.num_rows() {
+    if batch_row >= page.display_batch.num_rows() {
         return None;
     }
 
     let col_name = schema.fields()[col].name();
 
     // Get B-side (old) value
-    let b_col = b_side_batch.column(b_side_idx);
-    let old_val = if b_col.is_null(data_row) {
+    let b_col = page.b_side_batch.column(b_side_idx);
+    let old_val = if b_col.is_null(batch_row) {
         "NULL".to_string()
     } else {
         ArrayFormatter::try_new(b_col.as_ref(), &Default::default())
             .ok()
-            .map(|f| f.value(data_row).to_string())
+            .map(|f| f.value(batch_row).to_string())
             .unwrap_or_default()
     };
 
     // Get A-side (new) value
-    let a_col = batch.column(col);
-    let new_val = if a_col.is_null(data_row) {
+    let a_col = page.display_batch.column(col);
+    let new_val = if a_col.is_null(batch_row) {
         "NULL".to_string()
     } else {
         ArrayFormatter::try_new(a_col.as_ref(), &Default::default())
             .ok()
-            .map(|f| f.value(data_row).to_string())
+            .map(|f| f.value(batch_row).to_string())
             .unwrap_or_default()
     };
 
     Some(format!("{}: \"{}\" → \"{}\"", col_name, old_val, new_val))
+}
+
+/// Given the page data, extract the subset of rows that should be rendered
+/// based on scroll_offset and available height, returning a (batch, changed_cells, row_indices)
+/// tuple that is ready for the UnifiedTable.
+fn build_render_data<'a>(
+    diff: &'a crate::state::DiffState,
+    page: &'a DiffPageData,
+) -> (
+    &'a duckdb::arrow::record_batch::RecordBatch,
+    &'a [Vec<bool>],
+    &'a [usize],
+    usize, // scroll_offset within the render batch
+) {
+    // The page contains a buffer of rows. We need to figure out which
+    // portion of the page corresponds to the visible screen.
+    //
+    // In normal mode: page.row_indices are contiguous data rows.
+    //   scroll_offset is in display-row space = data-row space.
+    //   We need to find where scroll_offset falls in page.row_indices.
+    //
+    // In hide_common mode: page.row_indices are the data rows for
+    //   visible_rows[buffer_start..buffer_end]. scroll_offset is in
+    //   display-row (visible_rows index) space. We need to map it
+    //   to the page's row_indices.
+
+    // The page IS the render batch. scroll_offset into the page is computed
+    // by finding where the viewport start falls within page.row_indices.
+    let viewport_start_data_row = diff.display_to_data_row(diff.scroll_offset);
+
+    let page_scroll = page
+        .row_indices
+        .iter()
+        .position(|&r| r >= viewport_start_data_row)
+        .unwrap_or(0);
+
+    (
+        &page.display_batch,
+        &page.changed_cells,
+        &page.row_indices,
+        page_scroll,
+    )
 }
 
 impl Widget for DiffView<'_> {
@@ -249,8 +307,8 @@ impl Widget for DiffView<'_> {
             Some(s) => s,
             None => return,
         };
-        let full_batch = match diff.batch.as_ref() {
-            Some(b) => b,
+        let page = match diff.page.as_ref() {
+            Some(p) => p,
             None => return,
         };
 
@@ -291,27 +349,8 @@ impl Widget for DiffView<'_> {
             return;
         }
 
-        // When hide_common is on, build a filtered batch and markers
-        let (render_batch, render_markers, render_changed_cells);
-        let (batch_ref, markers_ref, changed_ref, scroll_offset);
-
-        if diff.hide_common && !diff.visible_rows.is_empty() {
-            let slices: Vec<_> = diff.visible_rows.iter().map(|&i| full_batch.slice(i, 1)).collect();
-            render_batch = concat_batches(schema, &slices).unwrap_or_else(|_| full_batch.clone());
-            render_markers = diff.visible_rows.iter().map(|&i| diff.markers[i]).collect::<Vec<_>>();
-            render_changed_cells = diff.visible_rows.iter().map(|&i| {
-                diff.changed_cells.get(i).cloned().unwrap_or_default()
-            }).collect::<Vec<_>>();
-            batch_ref = &render_batch;
-            markers_ref = &render_markers;
-            changed_ref = &render_changed_cells;
-            scroll_offset = diff.scroll_offset;
-        } else {
-            batch_ref = full_batch;
-            markers_ref = &diff.markers;
-            changed_ref = &diff.changed_cells;
-            scroll_offset = diff.scroll_offset;
-        };
+        let (batch_ref, changed_ref, row_indices, scroll_offset) =
+            build_render_data(diff, page);
 
         // Determine which columns are key columns vs diff columns
         let key_col_indices: Vec<usize> = fields
@@ -327,16 +366,21 @@ impl Widget for DiffView<'_> {
             .map(|(i, _)| i)
             .collect();
 
-        // selected_row in batch/render coordinates (for row_bg highlight)
-        let selected_data_row = diff.selected_row;
+        // selected_row in render batch coordinates
+        let selected_data_row = diff.display_to_data_row(diff.selected_row);
+        let selected_batch_row = row_indices
+            .iter()
+            .position(|&r| r == selected_data_row)
+            .unwrap_or(0);
 
         let styler = DiffStyler {
-            markers: markers_ref,
+            markers: &diff.markers,
             changed_cells: changed_ref,
+            row_indices,
             key_col_indices,
             diff_col_indices,
             selected_col: diff.selected_col,
-            selected_data_row,
+            selected_batch_row,
             theme,
         };
 

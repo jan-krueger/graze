@@ -1,7 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{App, AppMode};
-use crate::state::DiffMarker;
 
 pub(crate) fn handle_setup_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let col_count = app.diff.setup.columns.len();
@@ -104,19 +103,6 @@ pub(crate) fn handle_setup_cols(app: &mut App, key: crossterm::event::KeyEvent) 
     }
 }
 
-/// Collect all (data_row, col) pairs where changed_cells is true, sorted by (row, col).
-fn collect_changed_cells(diff: &crate::state::DiffState) -> Vec<(usize, usize)> {
-    let mut cells = Vec::new();
-    for (row, row_cells) in diff.changed_cells.iter().enumerate() {
-        for (col, &changed) in row_cells.iter().enumerate() {
-            if changed {
-                cells.push((row, col));
-            }
-        }
-    }
-    cells
-}
-
 /// Ensure selected_col is visible by placing it at the left edge of the viewport.
 /// Used by n/N jumps where the target column may be far from current view.
 fn scroll_to_selected_col(app: &mut App) {
@@ -152,6 +138,7 @@ fn jump_to_diff_cell(app: &mut App, data_row: usize, col: usize) {
     let page = diff_page_size(app);
     app.diff.adjust_view(page);
     scroll_to_selected_col(app);
+    app.ensure_diff_page();
 }
 
 pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
@@ -164,20 +151,24 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
             if visible_rows > 0 {
                 app.diff.selected_row = (app.diff.selected_row + 1).min(visible_rows - 1);
                 app.diff.adjust_view(page_size);
+                app.ensure_diff_page();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.diff.selected_row = app.diff.selected_row.saturating_sub(1);
             app.diff.adjust_view(page_size);
+            app.ensure_diff_page();
         }
         KeyCode::Char('g') => {
             app.diff.selected_row = 0;
             app.diff.adjust_view(page_size);
+            app.ensure_diff_page();
         }
         KeyCode::Char('G') => {
             if visible_rows > 0 {
                 app.diff.selected_row = visible_rows - 1;
                 app.diff.adjust_view(page_size);
+                app.ensure_diff_page();
             }
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -185,11 +176,13 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.diff.selected_row =
                     (app.diff.selected_row + half_page).min(visible_rows - 1);
                 app.diff.adjust_view(page_size);
+                app.ensure_diff_page();
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.diff.selected_row = app.diff.selected_row.saturating_sub(half_page);
             app.diff.adjust_view(page_size);
+            app.ensure_diff_page();
         }
         KeyCode::Char('h') | KeyCode::Left => {
             if app.diff.selected_col > 0 {
@@ -204,9 +197,6 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
                 let max_col = schema.fields().len().saturating_sub(1);
                 if app.diff.selected_col < max_col {
                     app.diff.selected_col += 1;
-                    // Scroll viewport right when the selected column is likely
-                    // off-screen. We don't know exact visible col count, so also
-                    // advance column_offset by 1 to keep pace.
                     if app.diff.column_offset < app.diff.selected_col {
                         app.diff.column_offset += 1;
                     }
@@ -214,37 +204,11 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('n') => {
-            let all_cells = collect_changed_cells(&app.diff);
-            if all_cells.is_empty() {
-                nav_next_diff_row(app, visible_rows, page_size);
-            } else {
-                let current_data_row = app.diff.display_to_data_row(app.diff.selected_row);
-                let current = (current_data_row, app.diff.selected_col);
-                let next = all_cells
-                    .iter()
-                    .find(|&&(r, c)| (r, c) > current)
-                    .or(all_cells.first());
-                if let Some(&(row, col)) = next {
-                    jump_to_diff_cell(app, row, col);
-                }
-            }
+            // Use changed_row_indices for cell-level n/N navigation
+            nav_next_changed(app, visible_rows, page_size);
         }
         KeyCode::Char('N') => {
-            let all_cells = collect_changed_cells(&app.diff);
-            if all_cells.is_empty() {
-                nav_prev_diff_row(app, visible_rows, page_size);
-            } else {
-                let current_data_row = app.diff.display_to_data_row(app.diff.selected_row);
-                let current = (current_data_row, app.diff.selected_col);
-                let prev = all_cells
-                    .iter()
-                    .rev()
-                    .find(|&&(r, c)| (r, c) < current)
-                    .or(all_cells.last());
-                if let Some(&(row, col)) = prev {
-                    jump_to_diff_cell(app, row, col);
-                }
-            }
+            nav_prev_changed(app, visible_rows, page_size);
         }
         KeyCode::Char('c') => {
             app.diff.hide_common = !app.diff.hide_common;
@@ -256,17 +220,19 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.diff.selected_row = 0;
             }
             app.diff.adjust_view(page_size);
+            app.ensure_diff_page();
         }
         KeyCode::Esc => {
-            app.diff.batch = None;
+            app.diff.backend = None;
+            app.diff.page = None;
             app.diff.schema = None;
             app.diff.markers.clear();
-            app.diff.changed_cells.clear();
+            app.diff.changed_row_indices.clear();
+            app.diff.total_rows = 0;
             app.diff.error = None;
             app.diff.loading = false;
             app.diff.hide_common = false;
             app.diff.visible_rows.clear();
-            app.diff.b_side_batch = None;
             app.diff.b_side_col_map.clear();
             app.diff.selected_col = 0;
             app.diff.selected_row = 0;
@@ -278,70 +244,69 @@ pub(crate) fn handle_diff(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
-/// Row-level fallback: jump to next non-Common row.
-fn nav_next_diff_row(app: &mut App, visible_rows: usize, page_size: usize) {
-    if app.diff.hide_common {
-        if visible_rows > 0 {
-            app.diff.selected_row = if app.diff.selected_row + 1 < visible_rows {
-                app.diff.selected_row + 1
-            } else {
-                0
-            };
-        }
-    } else {
-        let total = app.diff.markers.len();
-        if total > 0 {
-            let start = app.diff.selected_row + 1;
-            for i in start..total {
-                if app.diff.markers[i] != DiffMarker::Common {
-                    app.diff.selected_row = i;
-                    app.diff.adjust_view(page_size);
-                    return;
-                }
-            }
-            for i in 0..start.min(total) {
-                if app.diff.markers[i] != DiffMarker::Common {
-                    app.diff.selected_row = i;
-                    app.diff.adjust_view(page_size);
-                    return;
-                }
-            }
-        }
+/// Jump to next non-Common row using changed_row_indices binary search.
+fn nav_next_changed(app: &mut App, visible_rows: usize, page_size: usize) {
+    if app.diff.changed_row_indices.is_empty() {
+        return;
     }
+
+    let current_data_row = app.diff.display_to_data_row(app.diff.selected_row);
+
+    // Find the first changed row after current_data_row
+    let idx = match app.diff.changed_row_indices.binary_search(&(current_data_row + 1)) {
+        Ok(i) => Some(i),
+        Err(i) => {
+            if i < app.diff.changed_row_indices.len() {
+                Some(i)
+            } else {
+                // Wrap to beginning
+                Some(0)
+            }
+        }
+    };
+
+    if let Some(i) = idx {
+        let data_row = app.diff.changed_row_indices[i];
+        jump_to_diff_cell(app, data_row, app.diff.selected_col);
+    }
+
     app.diff.adjust_view(page_size);
+    let _ = visible_rows; // used for type consistency
 }
 
-/// Row-level fallback: jump to previous non-Common row.
-fn nav_prev_diff_row(app: &mut App, visible_rows: usize, page_size: usize) {
-    if app.diff.hide_common {
-        if visible_rows > 0 {
-            app.diff.selected_row = if app.diff.selected_row > 0 {
-                app.diff.selected_row - 1
-            } else {
-                visible_rows - 1
-            };
-        }
-    } else {
-        let total = app.diff.markers.len();
-        if total > 0 {
-            let start = app.diff.selected_row;
-            if start > 0 {
-                for i in (0..start).rev() {
-                    if app.diff.markers[i] != DiffMarker::Common {
-                        app.diff.selected_row = i;
-                        app.diff.adjust_view(page_size);
-                        return;
-                    }
-                }
-            }
-            for i in (start..total).rev() {
-                if app.diff.markers[i] != DiffMarker::Common {
-                    app.diff.selected_row = i;
-                    app.diff.adjust_view(page_size);
-                    return;
-                }
-            }
-        }
+/// Jump to previous non-Common row using changed_row_indices binary search.
+fn nav_prev_changed(app: &mut App, visible_rows: usize, page_size: usize) {
+    if app.diff.changed_row_indices.is_empty() {
+        return;
     }
+
+    let current_data_row = app.diff.display_to_data_row(app.diff.selected_row);
+
+    // Find the last changed row before current_data_row
+    let idx = match app.diff.changed_row_indices.binary_search(&current_data_row) {
+        Ok(i) => {
+            if i > 0 {
+                Some(i - 1)
+            } else {
+                // Wrap to end
+                Some(app.diff.changed_row_indices.len() - 1)
+            }
+        }
+        Err(i) => {
+            if i > 0 {
+                Some(i - 1)
+            } else {
+                // Wrap to end
+                Some(app.diff.changed_row_indices.len() - 1)
+            }
+        }
+    };
+
+    if let Some(i) = idx {
+        let data_row = app.diff.changed_row_indices[i];
+        jump_to_diff_cell(app, data_row, app.diff.selected_col);
+    }
+
     app.diff.adjust_view(page_size);
+    let _ = visible_rows;
 }

@@ -13,7 +13,7 @@ use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::DefaultTerminal;
 
-use crate::diff::DiffResult;
+use crate::diff::DiffBackend;
 use crate::event::{Action, DataEvent, TermEvent};
 use crate::ui::sql_pad::SQL_PAD_HEIGHT;
 use crate::state::{
@@ -231,7 +231,7 @@ pub struct App {
     action_txs: Vec<Sender<Action>>,
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
-    diff_rx: Option<Receiver<DiffResult>>,
+    diff_rx: Option<Receiver<anyhow::Result<DiffBackend>>>,
     query_counter: usize,
 }
 
@@ -913,10 +913,12 @@ impl App {
         self.diff.file_b = file_b;
         self.diff.loading = true;
         self.diff.error = None;
-        self.diff.batch = None;
+        self.diff.backend = None;
+        self.diff.page = None;
         self.diff.schema = None;
         self.diff.markers.clear();
-        self.diff.changed_cells.clear();
+        self.diff.changed_row_indices.clear();
+        self.diff.total_rows = 0;
         self.diff.scroll_offset = 0;
         self.diff.column_offset = 0;
         self.mode = AppMode::Diff;
@@ -925,12 +927,12 @@ impl App {
         let key_columns = self.diff.key_columns.clone();
         let diff_columns = self.diff.diff_columns.clone();
 
-        let (tx, rx) = mpsc::channel::<DiffResult>();
+        let (tx, rx) = mpsc::channel::<anyhow::Result<DiffBackend>>();
         self.diff_rx = Some(rx);
 
         thread::spawn(move || {
             let result =
-                crate::diff::compute_diff(&path_a, &path_b, &key_columns, &diff_columns);
+                DiffBackend::compute(&path_a, &path_b, &key_columns, &diff_columns);
             let _ = tx.send(result);
         });
     }
@@ -943,7 +945,7 @@ impl App {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.diff_rx = None;
                     self.diff.loading = false;
-                    if self.diff.error.is_none() && self.diff.batch.is_none() {
+                    if self.diff.error.is_none() && self.diff.backend.is_none() {
                         self.diff.error = Some("Diff thread disconnected".to_string());
                         self.status_message = Some("Diff failed".to_string());
                     }
@@ -957,18 +959,32 @@ impl App {
         self.diff.loading = false;
 
         match result {
-            Ok(dr) => {
-                self.diff.counts = dr.counts;
-                self.diff.markers = dr.markers;
-                self.diff.changed_cells = dr.changed_cells;
-                self.diff.schema = Some(dr.schema);
-                self.diff.batch = Some(dr.batch);
-                self.diff.b_side_batch = Some(dr.b_side_batch);
-                self.diff.b_side_col_map = dr.b_side_col_map;
+            Ok(backend) => {
+                self.diff.counts = backend.counts.clone();
+                self.diff.markers = backend.markers.clone();
+                self.diff.changed_row_indices = backend.changed_row_indices.clone();
+                self.diff.schema = Some(backend.schema.clone());
+                self.diff.b_side_col_map = backend.b_side_col_map.clone();
+                self.diff.total_rows = backend.total_rows;
                 self.diff.selected_col = 0;
                 self.diff.selected_row = 0;
                 self.diff.scroll_offset = 0;
                 self.diff.rebuild_visible_rows();
+
+                // Fetch the first page
+                let page_size = self.diff_page_size();
+                let row_indices: Vec<usize> = (0..page_size.min(backend.total_rows)).collect();
+                match backend.fetch_rows(&row_indices) {
+                    Ok(page) => {
+                        self.diff.page = Some(page);
+                    }
+                    Err(e) => {
+                        self.diff.error = Some(format!("Failed to fetch first page: {e:#}"));
+                    }
+                }
+
+                self.diff.backend = Some(backend);
+
                 let c = &self.diff.counts;
                 self.status_message = Some(format!(
                     "+{} -{} ~{} ={}",
@@ -978,6 +994,68 @@ impl App {
             Err(e) => {
                 self.diff.error = Some(format!("{e:#}"));
                 self.status_message = Some(format!("Diff error: {e:#}"));
+            }
+        }
+    }
+
+    /// Compute the diff view page size (data rows visible in the table area).
+    fn diff_page_size(&self) -> usize {
+        let chrome = 3; // cyan bar + column header + status bar
+        let tab_chrome = if self.has_tabs() { 1 } else { 0 };
+        let term_height = self.tab().viewport.page_size + 2 + tab_chrome;
+        term_height.saturating_sub(chrome + tab_chrome).max(1)
+    }
+
+    /// Ensure the diff page covers the currently visible rows.
+    /// Called after navigation changes selected_row/scroll_offset.
+    pub(crate) fn ensure_diff_page(&mut self) {
+        let backend = match self.diff.backend.as_ref() {
+            Some(b) => b,
+            None => return,
+        };
+
+        let screen_page_size = self.diff_page_size();
+        let buffer_size = screen_page_size * 3;
+
+        // Compute which data rows we need
+        let visible_count = self.diff.visible_row_count();
+        if visible_count == 0 {
+            return;
+        }
+
+        let center = self.diff.selected_row;
+        let half = buffer_size / 2;
+        let start = center.saturating_sub(half);
+        let end = (start + buffer_size).min(visible_count);
+        let start = end.saturating_sub(buffer_size);
+
+        let needed_data_rows: Vec<usize> = if self.diff.hide_common {
+            self.diff.visible_rows[start..end].to_vec()
+        } else {
+            (start..end).collect()
+        };
+
+        // Check if current page already covers these rows
+        if let Some(page) = self.diff.page.as_ref() {
+            if !page.row_indices.is_empty() {
+                let page_first = page.row_indices[0];
+                let page_last = *page.row_indices.last().unwrap();
+                let need_first = needed_data_rows[0];
+                let need_last = *needed_data_rows.last().unwrap();
+                // If the needed range is fully within the current page, skip refetch
+                if need_first >= page_first && need_last <= page_last {
+                    return;
+                }
+            }
+        }
+
+        // Fetch new page
+        match backend.fetch_rows(&needed_data_rows) {
+            Ok(page) => {
+                self.diff.page = Some(page);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Page fetch error: {e:#}"));
             }
         }
     }
