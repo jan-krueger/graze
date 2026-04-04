@@ -1,3 +1,7 @@
+pub mod column_picker;
+
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -5,6 +9,8 @@ use duckdb::arrow::datatypes::Schema;
 use duckdb::arrow::record_batch::RecordBatch;
 
 use crate::event::SortState;
+
+pub use self::column_picker::ColumnPickerState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
@@ -21,7 +27,10 @@ pub struct Viewport {
     pub selected_col: usize,
     pub selection_mode: SelectionMode,
     pub terminal_width: u16,
-    pub col_width_overrides: Vec<i16>,
+    /// Number of leftmost columns frozen (pinned) on the left side.
+    pub frozen_cols: usize,
+    /// Feedback from renderer: how many data rows actually fit on screen (used by wrap mode).
+    pub rendered_rows: std::cell::Cell<usize>,
 }
 
 impl Viewport {
@@ -34,7 +43,8 @@ impl Viewport {
             selected_col: 0,
             selection_mode: SelectionMode::Row,
             terminal_width: 0,
-            col_width_overrides: Vec::new(),
+            frozen_cols: 0,
+            rendered_rows: std::cell::Cell::new(0),
         }
     }
 
@@ -87,6 +97,10 @@ pub struct DataState {
     pub file_name: Option<String>,
     pub table_name: Option<String>,
     pub sort_state: SortState,
+    /// Pre-lowercased field names for autocomplete matching.
+    pub field_names_lower: Vec<String>,
+    /// Monotonically increasing counter, bumped when the batch changes.
+    pub batch_generation: u64,
 }
 
 impl DataState {
@@ -99,88 +113,40 @@ impl DataState {
             file_name: None,
             table_name: None,
             sort_state: SortState::default(),
+            field_names_lower: Vec::new(),
+            batch_generation: 0,
         }
     }
 }
 
-/// Filter mode state: input, active filter, autocomplete.
+/// Cached column widths to avoid recomputing every frame.
+pub struct ColWidthCache {
+    pub generation: u64,
+    pub sample_start: usize,
+    pub sample_end: usize,
+    pub headers: Vec<String>,
+    pub col_widths: Vec<u16>,
+}
+
+/// Filter mode state: active filter expression.
+/// Text editing is now handled by `TextInput` on `App`.
+/// Autocomplete is handled by `AutocompleteState` on `App`.
 pub struct FilterState {
-    pub input: String,
-    pub cursor_pos: usize,
     pub active_filter: Option<String>,
-    pub autocomplete_suggestions: Vec<String>,
-    pub autocomplete_index: usize,
-    pub autocomplete_active: bool,
 }
 
 impl FilterState {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
-            cursor_pos: 0,
             active_filter: None,
-            autocomplete_suggestions: Vec::new(),
-            autocomplete_index: 0,
-            autocomplete_active: false,
         }
     }
-
-    /// Byte offset in `input` corresponding to `cursor_pos` (char index).
-    pub fn cursor_byte_pos(&self) -> usize {
-        self.input
-            .char_indices()
-            .nth(self.cursor_pos)
-            .map(|(i, _)| i)
-            .unwrap_or(self.input.len())
-    }
-
-    pub fn insert_at_cursor(&mut self, c: char) {
-        let byte_pos = self.cursor_byte_pos();
-        self.input.insert(byte_pos, c);
-        self.cursor_pos += 1;
-    }
-
-    /// Delete the character before the cursor. Returns `true` if anything was removed.
-    pub fn delete_before_cursor(&mut self) -> bool {
-        if self.cursor_pos == 0 {
-            return false;
-        }
-        self.cursor_pos -= 1;
-        let byte_pos = self.cursor_byte_pos();
-        self.input.remove(byte_pos);
-        true
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        self.cursor_pos = self.cursor_pos.saturating_sub(1);
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        let len = self.input.chars().count();
-        if self.cursor_pos < len {
-            self.cursor_pos += 1;
-        }
-    }
-
-    pub fn move_cursor_to_start(&mut self) {
-        self.cursor_pos = 0;
-    }
-
-    pub fn move_cursor_to_end(&mut self) {
-        self.cursor_pos = self.input.chars().count();
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchMode {
-    Plain,
-    Regex,
 }
 
 /// Search state: active search term for highlighting and n/N navigation.
+/// Search always uses regex (plain text is valid regex).
 pub struct SearchState {
     pub active_search: Option<String>,
-    pub search_mode: SearchMode,
     pub match_count: Option<usize>,
     pub match_index: Option<usize>,
     /// Cached list of all matching row indices (sorted ascending).
@@ -191,7 +157,6 @@ impl SearchState {
     pub fn new() -> Self {
         Self {
             active_search: None,
-            search_mode: SearchMode::Plain,
             match_count: None,
             match_index: None,
             match_rows: Vec::new(),
@@ -253,9 +218,11 @@ pub struct TabState {
     pub search: SearchState,
     pub fetch_pending: bool,
     pub search_pending: bool,
-    pub pending_search_col_find: Option<(usize, String, bool)>,
+    pub pending_search_col_find: Option<(usize, String)>,
     pub file_path: Option<PathBuf>,
     pub hidden_columns: Vec<bool>,
+    pub col_width_cache: RefCell<Option<ColWidthCache>>,
+    pub marked_rows: HashSet<usize>,
 }
 
 impl TabState {
@@ -270,6 +237,8 @@ impl TabState {
             pending_search_col_find: None,
             file_path: None,
             hidden_columns: Vec::new(),
+            col_width_cache: RefCell::new(None),
+            marked_rows: HashSet::new(),
         }
     }
 }
@@ -336,23 +305,6 @@ pub fn first_visible_col(hidden: &[bool], max_col: usize) -> usize {
     0
 }
 
-/// Column picker state used by both diff setup steps.
-pub struct DiffSetup {
-    pub columns: Vec<String>,
-    pub selected: Vec<bool>,
-    pub cursor: usize,
-}
-
-impl DiffSetup {
-    pub fn new() -> Self {
-        Self {
-            columns: Vec::new(),
-            selected: Vec::new(),
-            cursor: 0,
-        }
-    }
-}
-
 /// Full diff view state.
 pub struct DiffState {
     pub backend: Option<crate::diff::DiffBackend>,
@@ -377,7 +329,6 @@ pub struct DiffState {
     pub file_b: String,
     pub key_columns: Vec<String>,
     pub diff_columns: Vec<String>,
-    pub setup: DiffSetup,
     pub hide_common: bool,
     /// Indices of visible rows when `hide_common` is true (non-Common rows).
     pub visible_rows: Vec<usize>,
@@ -404,7 +355,6 @@ impl DiffState {
             file_b: String::new(),
             key_columns: Vec::new(),
             diff_columns: Vec::new(),
-            setup: DiffSetup::new(),
             hide_common: false,
             visible_rows: Vec::new(),
         }
@@ -453,12 +403,95 @@ impl DiffState {
     }
 }
 
+/// Column jump overlay state: fuzzy-find a column and jump to it.
+pub struct ColumnJumpState {
+    pub query: String,
+    /// All columns: (original_col_idx, name).
+    pub all_columns: Vec<(usize, String)>,
+    /// Indices into `all_columns` that match the current query.
+    pub filtered: Vec<usize>,
+    /// Cursor position within `filtered`.
+    pub cursor: usize,
+}
+
+impl ColumnJumpState {
+    pub fn new() -> Self {
+        Self {
+            query: String::new(),
+            all_columns: Vec::new(),
+            filtered: Vec::new(),
+            cursor: 0,
+        }
+    }
+
+    /// Populate with column names from schema.
+    pub fn populate(&mut self, columns: Vec<(usize, String)>) {
+        self.all_columns = columns;
+        self.query.clear();
+        self.cursor = 0;
+        self.refilter();
+    }
+
+    /// Refilter columns based on current query (case-insensitive substring, prefix preferred).
+    pub fn refilter(&mut self) {
+        let q = self.query.to_lowercase();
+        if q.is_empty() {
+            self.filtered = (0..self.all_columns.len()).collect();
+        } else {
+            // Separate prefix matches and substring matches
+            let mut prefix = Vec::new();
+            let mut substring = Vec::new();
+            for (i, (_col_idx, name)) in self.all_columns.iter().enumerate() {
+                let lower = name.to_lowercase();
+                if lower.starts_with(&q) {
+                    prefix.push(i);
+                } else if lower.contains(&q) {
+                    substring.push(i);
+                }
+            }
+            prefix.extend(substring);
+            self.filtered = prefix;
+        }
+        // Clamp cursor
+        if !self.filtered.is_empty() {
+            self.cursor = self.cursor.min(self.filtered.len() - 1);
+        } else {
+            self.cursor = 0;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_down(&mut self) {
+        if !self.filtered.is_empty() && self.cursor + 1 < self.filtered.len() {
+            self.cursor += 1;
+        }
+    }
+
+    /// Get the original column index of the selected item, if any.
+    pub fn selected_col_idx(&self) -> Option<usize> {
+        let &all_idx = self.filtered.get(self.cursor)?;
+        Some(self.all_columns[all_idx].0)
+    }
+
+    pub fn clear(&mut self) {
+        self.query.clear();
+        self.all_columns.clear();
+        self.filtered.clear();
+        self.cursor = 0;
+    }
+}
+
 /// Stats overlay state: batch, schema, loading flag, scroll position.
 pub struct StatsState {
     pub batch: Option<RecordBatch>,
     pub schema: Option<Arc<Schema>>,
     pub loading: bool,
     pub scroll_offset: usize,
+    /// Number of data rows visible in the popup (set by renderer, read by handler).
+    pub visible_rows: std::cell::Cell<usize>,
 }
 
 impl StatsState {
@@ -468,6 +501,7 @@ impl StatsState {
             schema: None,
             loading: false,
             scroll_offset: 0,
+            visible_rows: std::cell::Cell::new(0),
         }
     }
 }

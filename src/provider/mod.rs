@@ -22,7 +22,7 @@ pub trait DataProvider: Send {
     fn apply_filter(&mut self, filter: &str) -> Result<usize>;
     fn reset_filters(&mut self) -> Result<usize>;
     fn execute_sql(&self, sql: &str) -> Result<RecordBatch>;
-    fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>>;
+    fn collect_match_rows(&self, term: &str) -> Result<Vec<usize>>;
 
     /// Populate the Arrow cache after TABLE materialization. No-op by default.
     fn materialize_cache(&mut self) -> Result<()> {
@@ -72,8 +72,8 @@ impl DataProvider for FileProvider {
         self.backend.execute_sql(sql)
     }
 
-    fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>> {
-        self.backend.collect_match_rows(term, is_regex)
+    fn collect_match_rows(&self, term: &str) -> Result<Vec<usize>> {
+        self.backend.collect_match_rows(term)
     }
 
     fn materialize_cache(&mut self) -> Result<()> {

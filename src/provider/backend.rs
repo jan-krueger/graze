@@ -218,11 +218,11 @@ impl DuckDbBackend {
     /// Collect all matching row indices.
     /// When cache exists, uses Rust-native string scan.
     /// Falls back to SQL when cache is None (VIEW phase).
-    pub fn collect_match_rows(&self, term: &str, is_regex: bool) -> Result<Vec<usize>> {
+    pub fn collect_match_rows(&self, term: &str) -> Result<Vec<usize>> {
         if let Some(cache) = &self.cached_data {
-            return self.collect_match_rows_cached(cache, term, is_regex);
+            return self.collect_match_rows_cached(cache, term);
         }
-        self.collect_match_rows_sql(term, is_regex)
+        self.collect_match_rows_sql(term)
     }
 
     /// Rust-native search over the cached RecordBatch.
@@ -230,9 +230,8 @@ impl DuckDbBackend {
         &self,
         cache: &RecordBatch,
         term: &str,
-        is_regex: bool,
     ) -> Result<Vec<usize>> {
-        let matcher = match SearchMatcher::new(term, is_regex) {
+        let matcher = match SearchMatcher::new(term) {
             Some(m) => m,
             None => return Ok(Vec::new()),
         };
@@ -267,8 +266,8 @@ impl DuckDbBackend {
     }
 
     /// SQL-based search (used during VIEW phase when cache is not available).
-    fn collect_match_rows_sql(&self, term: &str, is_regex: bool) -> Result<Vec<usize>> {
-        let match_clause = match self.build_match_clause(term, is_regex) {
+    fn collect_match_rows_sql(&self, term: &str) -> Result<Vec<usize>> {
+        let match_clause = match self.build_match_clause(term) {
             Some(c) => c,
             None => return Ok(Vec::new()),
         };
@@ -288,8 +287,8 @@ impl DuckDbBackend {
         Ok(rows)
     }
 
-    /// Build a SQL condition that matches any column against the search term.
-    fn build_match_clause(&self, term: &str, is_regex: bool) -> Option<String> {
+    /// Build a SQL condition that matches any column against the search term (always regex).
+    fn build_match_clause(&self, term: &str) -> Option<String> {
         let fields = self.schema.fields();
         if fields.is_empty() {
             return None;
@@ -299,11 +298,7 @@ impl DuckDbBackend {
             .iter()
             .map(|f| {
                 let col = format!("\"{}\"", f.name());
-                if is_regex {
-                    format!("regexp_matches({}::VARCHAR, '(?i){}')", col, escaped)
-                } else {
-                    format!("{}::VARCHAR ILIKE '%{}%'", col, escaped)
-                }
+                format!("regexp_matches({}::VARCHAR, '(?i){}')", col, escaped)
             })
             .collect();
         Some(conditions.join(" OR "))

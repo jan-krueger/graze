@@ -4,7 +4,8 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, AppMode};
+use crate::app::App;
+use crate::mode::{AppMode, OverlayVariant};
 use super::popup::Popup;
 
 pub struct ColumnPicker<'a> {
@@ -19,21 +20,19 @@ impl<'a> ColumnPicker<'a> {
 
 impl Widget for ColumnPicker<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let setup = &self.app.diff.setup;
-        if setup.columns.is_empty() {
+        let picker = &self.app.column_picker;
+        if picker.columns.is_empty() {
             return;
         }
 
-        let title = match self.app.mode {
-            AppMode::DiffSetupKey => "Select key column(s)",
-            AppMode::DiffSetupCols => "Select columns to compare",
-            AppMode::ColumnHide => "Show/hide columns",
+        let title = match &self.app.mode {
+            AppMode::Overlay(OverlayVariant::ColumnPicker) => "Show/hide columns",
             _ => return,
         };
 
         // Get column type info from schema
         let schema = self.app.tab().data.schema.as_ref();
-        let type_strings: Vec<String> = setup
+        let type_strings: Vec<String> = picker
             .columns
             .iter()
             .map(|col_name| {
@@ -44,14 +43,14 @@ impl Widget for ColumnPicker<'_> {
             })
             .collect();
 
-        let max_name_len = setup.columns.iter().map(|c| c.width()).max().unwrap_or(8);
+        let max_name_len = picker.columns.iter().map(|c| c.width()).max().unwrap_or(8);
         let max_type_len = type_strings.iter().map(|t| t.width()).max().unwrap_or(4);
         let footer = "Space:toggle  Enter:confirm  Esc:cancel";
 
         // Content width: "  [x] name     type  "
         let content_width = 6 + max_name_len + 2 + max_type_len + 2;
         let max_visible = (area.height as usize).saturating_sub(6);
-        let visible_rows = setup.columns.len().min(max_visible).max(1);
+        let visible_rows = picker.columns.len().min(max_visible).max(1);
 
         let theme = &self.app.theme;
         let popup = Popup::new(title, footer, content_width, visible_rows, theme);
@@ -62,13 +61,13 @@ impl Widget for ColumnPicker<'_> {
         let dim_style = Style::default().fg(theme.dim);
         let check_style = Style::default().fg(Color::Green);
 
-        let scroll_start = if setup.cursor >= visible_rows {
-            setup.cursor - visible_rows + 1
+        let scroll_start = if picker.cursor >= visible_rows {
+            picker.cursor - visible_rows + 1
         } else {
             0
         };
 
-        for (i, col_idx) in (scroll_start..setup.columns.len())
+        for (i, col_idx) in (scroll_start..picker.columns.len())
             .take(visible_rows)
             .enumerate()
         {
@@ -77,8 +76,8 @@ impl Widget for ColumnPicker<'_> {
                 break;
             }
 
-            let is_cursor = col_idx == setup.cursor;
-            let is_checked = setup.selected[col_idx];
+            let is_cursor = col_idx == picker.cursor;
+            let is_checked = picker.selected[col_idx];
             let row_style = if is_cursor { selected_style } else { normal_style };
 
             // Prefix
@@ -91,7 +90,7 @@ impl Widget for ColumnPicker<'_> {
             buf.set_string(inner.x + 3, row_y, checkbox, cb_style);
 
             // Column name
-            let name = &setup.columns[col_idx];
+            let name = &picker.columns[col_idx];
             let padded_name = format!("{:<width$}", name, width = max_name_len);
             buf.set_string(inner.x + 7, row_y, &padded_name, row_style);
 

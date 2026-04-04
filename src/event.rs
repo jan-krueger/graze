@@ -127,10 +127,7 @@ pub enum Action {
         schema: Arc<Schema>,
         name: String,
     },
-    CollectMatches {
-        term: String,
-        is_regex: bool,
-    },
+    CollectMatches(String),
     Quit,
 }
 
@@ -171,6 +168,7 @@ pub enum DataEvent {
 #[derive(Debug)]
 pub enum TermEvent {
     Key(KeyEvent),
+    Mouse(crossterm::event::MouseEvent),
     Resize(u16, u16),
     Tick,
 }

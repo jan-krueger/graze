@@ -9,212 +9,21 @@ use crossterm::event::{self, Event};
 use duckdb::arrow::array::Array;
 use duckdb::arrow::datatypes::Schema;
 use duckdb::arrow::record_batch::RecordBatch;
-use ratatui::layout::Constraint;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::DefaultTerminal;
 
-use crate::diff::DiffBackend;
 use crate::event::{Action, DataEvent, TermEvent};
-use crate::ui::sql_pad::SQL_PAD_HEIGHT;
+use crate::input::TextInput;
+use crate::input::autocomplete::AutocompleteState;
+use crate::input::history::InputHistory;
+use crate::mode::{AppMode, OverlayVariant};
 use crate::state::{
-    DiffState, SqlState, StatsState, TabState,
+    ColumnJumpState, ColumnPickerState, SqlState, StatsState, TabState,
 };
 use crate::ui::AppView;
 use crate::ui::theme::Theme;
 use crate::worker::Worker;
 
 const BUFFER_MULTIPLIER: usize = 5;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AppMode {
-    Normal,
-    Search,
-    Regex,
-    Filter,
-    Sql,
-    Stats,
-    DiffSetupKey,
-    DiffSetupCols,
-    Diff,
-    GoToRow,
-    ColumnHide,
-    Help,
-    Quitting,
-}
-
-impl AppMode {
-    pub fn badge(&self) -> &'static str {
-        match self {
-            AppMode::Normal => " NORMAL ",
-            AppMode::Search => " SEARCH ",
-            AppMode::Regex => " REGEX ",
-            AppMode::Filter => " FILTER ",
-            AppMode::Sql => " SQL ",
-            AppMode::Stats => " STATS ",
-            AppMode::DiffSetupKey => " KEY ",
-            AppMode::DiffSetupCols => " COLS ",
-            AppMode::Diff => " DIFF ",
-            AppMode::GoToRow => " GOTO ",
-            AppMode::ColumnHide => " COLS ",
-            AppMode::Help => " HELP ",
-            AppMode::Quitting => " QUIT ",
-        }
-    }
-
-    pub fn badge_style(&self) -> Style {
-        match self {
-            AppMode::Normal => Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Search => Style::default()
-                .bg(Color::Yellow)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Regex => Style::default()
-                .bg(Color::Magenta)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Filter => Style::default()
-                .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Sql => Style::default()
-                .bg(Color::Magenta)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Stats => Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::DiffSetupKey => Style::default()
-                .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::DiffSetupCols => Style::default()
-                .bg(Color::Yellow)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Diff => Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            AppMode::GoToRow => Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            AppMode::ColumnHide => Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Help => Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            AppMode::Quitting => Style::default()
-                .bg(Color::Red)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        }
-    }
-
-    pub fn hints(&self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            AppMode::Normal => &[
-                ("?", "help"),
-                ("q", "quit"),
-                ("/", "search"),
-                ("f", "filter"),
-                ("s", "sort"),
-                (":", "goto"),
-                ("H", "cols"),
-                ("+/-", "width"),
-            ],
-            AppMode::Search | AppMode::Regex => &[("Enter", "apply"), ("Esc", "cancel")],
-            AppMode::Filter => &[
-                ("Enter", "apply"),
-                ("Esc", "cancel"),
-                ("$col", "autocomplete"),
-                ("Tab", "complete"),
-            ],
-            AppMode::Sql => &[("F5/Ctrl-e", "execute"), ("Ctrl-t", "pin tab"), ("Esc", "cancel")],
-            AppMode::Stats => &[("j/k", "scroll"), ("g/G", "top/bottom"), ("Esc", "close")],
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide => &[
-                ("Space", "toggle"),
-                ("Enter", "confirm"),
-                ("Esc", "cancel"),
-            ],
-            AppMode::GoToRow => &[("Enter", "go"), ("Esc", "cancel")],
-            AppMode::Diff => &[
-                ("n", "next"),
-                ("N", "prev"),
-                ("h/l", "col"),
-                ("c", "changes"),
-                ("Esc", "close"),
-            ],
-            AppMode::Help => &[("Esc", "close")],
-            AppMode::Quitting => &[],
-        }
-    }
-
-    pub fn hints_string(&self) -> String {
-        self.hints()
-            .iter()
-            .map(|(k, v)| format!("{k}:{v}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    pub fn layout_constraints(&self) -> Vec<Constraint> {
-        match self {
-            AppMode::Stats => vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-                Constraint::Length(1),
-            ],
-            AppMode::Sql => vec![
-                Constraint::Min(3),
-                Constraint::Length(SQL_PAD_HEIGHT),
-                Constraint::Length(1),
-            ],
-            AppMode::Search | AppMode::Regex | AppMode::Filter | AppMode::GoToRow => vec![
-                Constraint::Min(3),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ],
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols | AppMode::ColumnHide | AppMode::Diff | AppMode::Help => {
-                vec![Constraint::Min(3), Constraint::Length(1)]
-            }
-            _ => vec![Constraint::Min(3), Constraint::Length(1)],
-        }
-    }
-
-    pub fn cursor_position(&self, app: &App, area_height: u16) -> Option<(u16, u16)> {
-        match self {
-            AppMode::Search | AppMode::Regex | AppMode::Filter => {
-                use unicode_width::UnicodeWidthStr;
-                let filter_y = area_height - 2;
-                let filter = &app.tab().filter;
-                let cursor_x = 8 + filter.input[..filter.cursor_byte_pos()].width() as u16;
-                Some((cursor_x, filter_y))
-            }
-            AppMode::GoToRow => {
-                use unicode_width::UnicodeWidthStr;
-                let input_y = area_height - 2;
-                let filter = &app.tab().filter;
-                let cursor_x = 8 + filter.input[..filter.cursor_byte_pos()].width() as u16;
-                Some((cursor_x, input_y))
-            }
-            AppMode::Sql => {
-                let sql_input_start_y = area_height.saturating_sub(6);
-                let cursor_y = sql_input_start_y + app.sql.cursor_row as u16;
-                let cursor_x = 4 + app.sql.cursor_col as u16;
-                Some((cursor_x, cursor_y))
-            }
-            _ => None,
-        }
-    }
-}
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -224,14 +33,23 @@ pub struct App {
     pub active_tab: usize,
     pub sql: SqlState,
     pub stats: StatsState,
-    pub diff: DiffState,
+    pub text_input: TextInput,
+    pub autocomplete: AutocompleteState,
+    pub column_picker: ColumnPickerState,
+    pub column_jump: ColumnJumpState,
+    pub filter_history: InputHistory,
     pub status_message: Option<String>,
     pub tick: usize,
+    pub wrap: bool,
+    pub stdin_label: bool,
     pub theme: Theme,
+    /// Layout area of the table (set by renderer, read by mouse handler).
+    pub table_area: std::cell::Cell<ratatui::layout::Rect>,
+    /// Y coordinate of the tab bar (0 if multi-tab, otherwise not present).
+    pub tab_bar_y: std::cell::Cell<Option<u16>>,
     action_txs: Vec<Sender<Action>>,
     data_rxs: Vec<Receiver<DataEvent>>,
     term_rx: Receiver<TermEvent>,
-    diff_rx: Option<Receiver<anyhow::Result<DiffBackend>>>,
     query_counter: usize,
 }
 
@@ -276,17 +94,89 @@ impl App {
             active_tab: 0,
             sql: SqlState::new(),
             stats: StatsState::new(),
-            diff: DiffState::new(),
+            text_input: TextInput::new(),
+            autocomplete: AutocompleteState::new(),
+            column_picker: ColumnPickerState::new(),
+            column_jump: ColumnJumpState::new(),
+            filter_history: InputHistory::new(50),
             status_message: Some("Loading...".to_string()),
             tick: 0,
+            wrap: false,
+            stdin_label: false,
             theme,
+            table_area: std::cell::Cell::new(ratatui::layout::Rect::default()),
+            tab_bar_y: std::cell::Cell::new(None),
             action_txs,
             data_rxs,
             term_rx,
-            diff_rx: None,
             query_counter: 0,
         })
     }
+
+    // --- Mode lifecycle (Phase 3) ---
+
+    pub fn transition_to(&mut self, new_mode: AppMode) {
+        self.exit_current_mode();
+        self.mode = new_mode;
+        self.enter_current_mode();
+    }
+
+    fn exit_current_mode(&mut self) {
+        match &self.mode {
+            AppMode::Input(_) => {
+                self.text_input.clear();
+                self.text_input.char_filter = None;
+                self.autocomplete.clear();
+                self.filter_history.reset_position();
+            }
+            AppMode::Overlay(OverlayVariant::Help) => {}
+            AppMode::Overlay(OverlayVariant::ColumnPicker) => {
+                // column_picker state is left for the caller to inspect before transitioning
+            }
+            AppMode::Overlay(OverlayVariant::ColumnJump) => {
+                self.column_jump.clear();
+            }
+            AppMode::Overlay(OverlayVariant::Stats) => {
+                self.stats.batch = None;
+                self.stats.schema = None;
+                self.stats.loading = false;
+                self.status_message = None;
+            }
+            AppMode::Sql => {
+                self.sql.result = None;
+                self.sql.result_schema = None;
+                self.sql.error = None;
+                self.status_message = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn enter_current_mode(&mut self) {
+        match &self.mode {
+            AppMode::Overlay(OverlayVariant::Stats) => {
+                self.stats.loading = true;
+                self.stats.batch = None;
+                self.stats.schema = None;
+                self.stats.scroll_offset = 0;
+                let table = self
+                    .tab()
+                    .data
+                    .table_name
+                    .as_deref()
+                    .unwrap_or("data")
+                    .to_string();
+                self.status_message = Some("Loading statistics...".to_string());
+                self.send_action(Action::ExecuteSql(format!("SUMMARIZE {table}")));
+            }
+            AppMode::Sql => {
+                self.sql.error = None;
+            }
+            _ => {}
+        }
+    }
+
+    // --- Tab accessors ---
 
     /// Get a reference to the active tab.
     pub fn tab(&self) -> &TabState {
@@ -450,7 +340,7 @@ impl App {
         self.sql.error = None;
         self.stats.batch = None;
         self.stats.schema = None;
-        if matches!(self.mode, AppMode::Stats | AppMode::Sql) {
+        if matches!(self.mode, AppMode::Overlay(OverlayVariant::Stats) | AppMode::Sql) {
             self.mode = AppMode::Normal;
         }
         let row = self.tabs[self.active_tab].viewport.selected_row;
@@ -458,11 +348,23 @@ impl App {
     }
 
     fn update_terminal_size(&mut self, width: u16, height: u16) {
-        let chrome = if self.has_tabs() { 3 } else { 2 }; // +1 for tab bar
-        let page_size = (height as usize).saturating_sub(chrome).max(1);
+        // Chrome: status bar (1) + table header row (1) + tab bar (1 if multi-tab)
+        let chrome = if self.has_tabs() { 3 } else { 2 };
+        // Subtract 1 more for the table header row within the table area
+        let page_size = (height as usize).saturating_sub(chrome + 1).max(1);
         for tab in &mut self.tabs {
             tab.viewport.page_size = page_size;
             tab.viewport.terminal_width = width;
+        }
+    }
+
+    /// After render, sync page_size from rendered_rows when wrap mode is active.
+    fn sync_wrap_page_size(&mut self) {
+        if self.wrap {
+            let rendered = self.tab().viewport.rendered_rows.get();
+            if rendered > 0 {
+                self.tab_mut().viewport.page_size = rendered;
+            }
         }
     }
 
@@ -480,6 +382,8 @@ impl App {
                 }
             })?;
 
+            self.sync_wrap_page_size();
+
             if self.mode == AppMode::Quitting {
                 for tx in &self.action_txs {
                     let _ = tx.send(Action::Quit);
@@ -488,11 +392,14 @@ impl App {
             }
 
             self.process_data_events();
-            self.poll_diff_result();
 
             match self.term_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(TermEvent::Key(key_event)) => {
+                    self.status_message = None;
                     crate::handlers::handle_key(self, key_event);
+                }
+                Ok(TermEvent::Mouse(mouse)) => {
+                    crate::handlers::mouse::handle_mouse(self, mouse);
                 }
                 Ok(TermEvent::Resize(w, h)) => {
                     self.update_terminal_size(w, h);
@@ -564,16 +471,22 @@ impl App {
     ) {
         let tab = &mut self.tabs[tab_idx];
         let num_cols = schema.fields().len();
+        tab.data.field_names_lower = schema
+            .fields()
+            .iter()
+            .map(|f| f.name().to_lowercase())
+            .collect();
         tab.data.schema = Some(schema);
         tab.data.total_rows = total_rows;
-        tab.data.file_name = Some(file_name);
+        tab.data.file_name = if self.stdin_label && tab_idx == 0 {
+            Some("<stdin>".to_string())
+        } else {
+            Some(file_name)
+        };
         tab.data.table_name = Some(table_name);
         tab.fetch_pending = false;
         if tab.hidden_columns.len() != num_cols {
             tab.hidden_columns = vec![false; num_cols];
-        }
-        if tab.viewport.col_width_overrides.len() != num_cols {
-            tab.viewport.col_width_overrides = vec![0i16; num_cols];
         }
         if is_active {
             self.status_message = None;
@@ -593,6 +506,7 @@ impl App {
         tab.data.buffer_offset = offset;
         tab.data.current_batch = Some(batch);
         tab.data.total_rows = total_rows;
+        tab.data.batch_generation += 1;
         tab.fetch_pending = false;
         if is_active {
             self.try_resolve_search_column();
@@ -630,7 +544,7 @@ impl App {
         tab.viewport.selected_row = 0;
         tab.viewport.view_start = 0;
         tab.data.buffer_offset = 0;
-        tab.filter.active_filter = Some(tab.filter.input.clone());
+        // active_filter is already set by the input handler before sending the action
         tab.fetch_pending = false;
         tab.pending_search_col_find = None;
         if is_active {
@@ -665,7 +579,7 @@ impl App {
             return;
         }
         let is_summarize = sql.trim_start().to_uppercase().starts_with("SUMMARIZE");
-        if is_summarize && self.mode == AppMode::Stats {
+        if is_summarize && matches!(self.mode, AppMode::Overlay(OverlayVariant::Stats)) {
             let num_rows = batch.num_rows();
             self.stats.schema = Some(schema);
             self.stats.batch = Some(batch);
@@ -685,7 +599,7 @@ impl App {
             return;
         }
         let is_summarize = sql.trim_start().to_uppercase().starts_with("SUMMARIZE");
-        if is_summarize && self.mode == AppMode::Stats {
+        if is_summarize && matches!(self.mode, AppMode::Overlay(OverlayVariant::Stats)) {
             self.stats.batch = None;
             self.stats.schema = None;
             self.stats.loading = false;
@@ -709,6 +623,9 @@ impl App {
 
     fn on_error(&mut self, tab_idx: usize, is_active: bool, msg: String) {
         self.tabs[tab_idx].fetch_pending = false;
+        if msg.starts_with("Invalid filter:") {
+            self.tabs[tab_idx].filter.active_filter = None;
+        }
         if is_active {
             self.status_message = Some(format!("Error: {msg}"));
         }
@@ -770,12 +687,11 @@ impl App {
         let tab = &mut self.tabs[tab_idx];
         if let Some(ref term) = tab.search.active_search {
             let term = term.clone();
-            let is_regex = tab.search.search_mode == crate::state::SearchMode::Regex;
             tab.search.match_rows.clear();
             tab.search.match_count = None;
             tab.search.match_index = None;
             tab.search_pending = true;
-            self.send_action(Action::CollectMatches { term, is_regex });
+            self.send_action(Action::CollectMatches(term));
         } else {
             tab.search_pending = false;
         }
@@ -783,7 +699,7 @@ impl App {
 
     fn try_resolve_search_column(&mut self) {
         let tab = self.tab();
-        let (target_row, term, is_regex) = match tab.pending_search_col_find.as_ref() {
+        let (target_row, term) = match tab.pending_search_col_find.as_ref() {
             Some(v) => v.clone(),
             None => return,
         };
@@ -805,15 +721,10 @@ impl App {
         }
 
         let batch_row = target_row - tab.data.buffer_offset;
-        let term_lower = term.to_lowercase();
-        let re = if is_regex {
-            regex::RegexBuilder::new(&term)
-                .case_insensitive(true)
-                .build()
-                .ok()
-        } else {
-            None
-        };
+        let re = regex::RegexBuilder::new(&term)
+            .case_insensitive(true)
+            .build()
+            .ok();
 
         let formatters: Vec<Option<duckdb::arrow::util::display::ArrayFormatter>> =
             (0..batch.num_columns())
@@ -837,12 +748,7 @@ impl App {
             }
             if let Some(ref fmt) = formatters[col_idx] {
                 let val = fmt.value(batch_row).to_string();
-                let matches = if is_regex {
-                    re.as_ref().map_or(false, |r| r.is_match(&val))
-                } else {
-                    val.to_lowercase().contains(&term_lower)
-                };
-                if matches {
+                if re.as_ref().map_or(false, |r| r.is_match(&val)) {
                     found_col = Some(col_idx);
                     break;
                 }
@@ -856,207 +762,6 @@ impl App {
         if let Some(col_idx) = found_col {
             self.tab_mut().viewport.selected_col = col_idx;
             self.adjust_column_view();
-        }
-    }
-
-    pub(crate) fn enter_diff_setup(&mut self) {
-        if self.tabs.len() < 2 {
-            self.status_message = Some("Need 2+ tabs for diff".to_string());
-            return;
-        }
-        let schema = match self.tab().data.schema.as_ref() {
-            Some(s) => s.clone(),
-            None => {
-                self.status_message = Some("No schema available".to_string());
-                return;
-            }
-        };
-        let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
-        let len = columns.len();
-        self.diff.setup.columns = columns;
-        self.diff.setup.selected = vec![false; len];
-        self.diff.setup.cursor = 0;
-        self.mode = AppMode::DiffSetupKey;
-    }
-
-    pub(crate) fn start_diff(&mut self) {
-        let tab_a = self.active_tab;
-        let tab_b = (self.active_tab + 1) % self.tabs.len();
-
-        let path_a = match self.tabs[tab_a].file_path.as_ref() {
-            Some(p) => p.clone(),
-            None => {
-                self.status_message = Some("No file path for tab A".to_string());
-                self.mode = AppMode::Normal;
-                return;
-            }
-        };
-        let path_b = match self.tabs[tab_b].file_path.as_ref() {
-            Some(p) => p.clone(),
-            None => {
-                self.status_message = Some("No file path for tab B".to_string());
-                self.mode = AppMode::Normal;
-                return;
-            }
-        };
-
-        let file_a = path_a
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let file_b = path_b
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        self.diff.file_a = file_a;
-        self.diff.file_b = file_b;
-        self.diff.loading = true;
-        self.diff.error = None;
-        self.diff.backend = None;
-        self.diff.page = None;
-        self.diff.schema = None;
-        self.diff.markers.clear();
-        self.diff.changed_row_indices.clear();
-        self.diff.total_rows = 0;
-        self.diff.scroll_offset = 0;
-        self.diff.column_offset = 0;
-        self.mode = AppMode::Diff;
-        self.status_message = Some("Computing diff...".to_string());
-
-        let key_columns = self.diff.key_columns.clone();
-        let diff_columns = self.diff.diff_columns.clone();
-
-        let (tx, rx) = mpsc::channel::<anyhow::Result<DiffBackend>>();
-        self.diff_rx = Some(rx);
-
-        thread::spawn(move || {
-            let result =
-                DiffBackend::compute(&path_a, &path_b, &key_columns, &diff_columns);
-            let _ = tx.send(result);
-        });
-    }
-
-    fn poll_diff_result(&mut self) {
-        let result = match self.diff_rx.as_ref() {
-            Some(rx) => match rx.try_recv() {
-                Ok(r) => r,
-                Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.diff_rx = None;
-                    self.diff.loading = false;
-                    if self.diff.error.is_none() && self.diff.backend.is_none() {
-                        self.diff.error = Some("Diff thread disconnected".to_string());
-                        self.status_message = Some("Diff failed".to_string());
-                    }
-                    return;
-                }
-            },
-            None => return,
-        };
-
-        self.diff_rx = None;
-        self.diff.loading = false;
-
-        match result {
-            Ok(backend) => {
-                self.diff.counts = backend.counts.clone();
-                self.diff.markers = backend.markers.clone();
-                self.diff.changed_row_indices = backend.changed_row_indices.clone();
-                self.diff.schema = Some(backend.schema.clone());
-                self.diff.b_side_col_map = backend.b_side_col_map.clone();
-                self.diff.total_rows = backend.total_rows;
-                self.diff.selected_col = 0;
-                self.diff.selected_row = 0;
-                self.diff.scroll_offset = 0;
-                self.diff.rebuild_visible_rows();
-
-                // Fetch the first page
-                let page_size = self.diff_page_size();
-                let row_indices: Vec<usize> = (0..page_size.min(backend.total_rows)).collect();
-                match backend.fetch_rows(&row_indices) {
-                    Ok(page) => {
-                        self.diff.page = Some(page);
-                    }
-                    Err(e) => {
-                        self.diff.error = Some(format!("Failed to fetch first page: {e:#}"));
-                    }
-                }
-
-                self.diff.backend = Some(backend);
-
-                let c = &self.diff.counts;
-                self.status_message = Some(format!(
-                    "+{} -{} ~{} ={}",
-                    c.only_a, c.only_b, c.changed, c.common
-                ));
-            }
-            Err(e) => {
-                self.diff.error = Some(format!("{e:#}"));
-                self.status_message = Some(format!("Diff error: {e:#}"));
-            }
-        }
-    }
-
-    /// Compute the diff view page size (data rows visible in the table area).
-    fn diff_page_size(&self) -> usize {
-        let chrome = 3; // cyan bar + column header + status bar
-        let tab_chrome = if self.has_tabs() { 1 } else { 0 };
-        let term_height = self.tab().viewport.page_size + 2 + tab_chrome;
-        term_height.saturating_sub(chrome + tab_chrome).max(1)
-    }
-
-    /// Ensure the diff page covers the currently visible rows.
-    /// Called after navigation changes selected_row/scroll_offset.
-    pub(crate) fn ensure_diff_page(&mut self) {
-        let backend = match self.diff.backend.as_ref() {
-            Some(b) => b,
-            None => return,
-        };
-
-        let screen_page_size = self.diff_page_size();
-        let buffer_size = screen_page_size * 3;
-
-        // Compute which data rows we need
-        let visible_count = self.diff.visible_row_count();
-        if visible_count == 0 {
-            return;
-        }
-
-        let center = self.diff.selected_row;
-        let half = buffer_size / 2;
-        let start = center.saturating_sub(half);
-        let end = (start + buffer_size).min(visible_count);
-        let start = end.saturating_sub(buffer_size);
-
-        let needed_data_rows: Vec<usize> = if self.diff.hide_common {
-            self.diff.visible_rows[start..end].to_vec()
-        } else {
-            (start..end).collect()
-        };
-
-        // Check if current page already covers these rows
-        if let Some(page) = self.diff.page.as_ref() {
-            if !page.row_indices.is_empty() {
-                let page_first = page.row_indices[0];
-                let page_last = *page.row_indices.last().unwrap();
-                let need_first = needed_data_rows[0];
-                let need_last = *needed_data_rows.last().unwrap();
-                // If the needed range is fully within the current page, skip refetch
-                if need_first >= page_first && need_last <= page_last {
-                    return;
-                }
-            }
-        }
-
-        // Fetch new page
-        match backend.fetch_rows(&needed_data_rows) {
-            Ok(page) => {
-                self.diff.page = Some(page);
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Page fetch error: {e:#}"));
-            }
         }
     }
 
@@ -1075,9 +780,83 @@ impl App {
         let col_name = fields[col_idx].name().clone();
 
         self.tab_mut().data.sort_state.toggle(&col_name);
+
+        // Show feedback
+        let sort_state = &self.tab().data.sort_state;
+        if let Some(order) = sort_state.order_for(&col_name) {
+            self.status_message = Some(format!("Sort: {} {}", col_name, order.as_sql().to_lowercase()));
+        } else {
+            self.status_message = Some(format!("Sort cleared: {col_name}"));
+        }
+
         let sort_state = self.tab().data.sort_state.clone();
         let _ = self.action_txs[self.active_tab]
             .send(Action::ApplySort(sort_state));
+    }
+
+    /// Export marked rows as CSV. Returns None if no rows are marked.
+    pub fn marked_row_csv(&self) -> Option<String> {
+        let tab = self.tab();
+        if tab.marked_rows.is_empty() {
+            return None;
+        }
+        let schema = tab.data.schema.as_ref()?;
+        let batch = tab.data.current_batch.as_ref()?;
+        let formatters: Vec<Option<duckdb::arrow::util::display::ArrayFormatter>> =
+            (0..batch.num_columns())
+                .map(|i| {
+                    duckdb::arrow::util::display::ArrayFormatter::try_new(
+                        batch.column(i).as_ref(),
+                        &Default::default(),
+                    )
+                    .ok()
+                })
+                .collect();
+
+        let fields = schema.fields();
+        let mut csv = String::new();
+
+        // Header
+        let header: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+        csv.push_str(&header.join(","));
+        csv.push('\n');
+
+        // Rows (sorted by row index)
+        let mut sorted_rows: Vec<usize> = tab.marked_rows.iter().copied().collect();
+        sorted_rows.sort();
+
+        for abs_row in sorted_rows {
+            // Convert to buffer-relative row
+            if abs_row < tab.data.buffer_offset {
+                continue;
+            }
+            let buf_row = abs_row - tab.data.buffer_offset;
+            if buf_row >= batch.num_rows() {
+                continue;
+            }
+
+            let mut cells = Vec::with_capacity(fields.len());
+            for col_idx in 0..fields.len() {
+                let column = batch.column(col_idx);
+                if column.is_null(buf_row) {
+                    cells.push(String::new());
+                } else if let Some(ref fmt) = formatters[col_idx] {
+                    let val = fmt.value(buf_row).to_string();
+                    // CSV-escape values containing commas, quotes, or newlines
+                    if val.contains(',') || val.contains('"') || val.contains('\n') {
+                        cells.push(format!("\"{}\"", val.replace('"', "\"\"")));
+                    } else {
+                        cells.push(val);
+                    }
+                } else {
+                    cells.push(String::new());
+                }
+            }
+            csv.push_str(&cells.join(","));
+            csv.push('\n');
+        }
+
+        Some(csv)
     }
 }
 
@@ -1087,6 +866,11 @@ fn event_thread(tx: Sender<TermEvent>) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => {
                     if tx.send(TermEvent::Key(key)).is_err() {
+                        break;
+                    }
+                }
+                Ok(Event::Mouse(mouse)) => {
+                    if tx.send(TermEvent::Mouse(mouse)).is_err() {
                         break;
                     }
                 }

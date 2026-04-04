@@ -1,12 +1,9 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::{App, AppMode};
-use crate::event::Action;
-use crate::state::{SelectionMode, next_visible_col};
-
-const COL_WIDTH_STEP: i16 = 2;
-const MAX_COL_WIDTH_OVERRIDE: i16 = 450;
-const MIN_COL_WIDTH_OVERRIDE: i16 = -46;
+use crate::app::App;
+use crate::event::{Action, SortState};
+use crate::mode::{AppMode, InputVariant, OverlayVariant};
+use crate::state::{SearchState, SelectionMode, next_visible_col};
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
@@ -40,6 +37,14 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             let half = app.tab().viewport.page_size / 2;
             app.move_up(half);
         }
+        KeyCode::PageDown => {
+            let page = app.tab().viewport.page_size;
+            app.move_down(page);
+        }
+        KeyCode::PageUp => {
+            let page = app.tab().viewport.page_size;
+            app.move_up(page);
+        }
         KeyCode::Char('g') => {
             app.tab_mut().viewport.selected_row = 0;
             app.tab_mut().viewport.adjust_view();
@@ -58,12 +63,13 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('h') | KeyCode::Left => {
             match app.tab().viewport.selection_mode {
                 SelectionMode::Row => {
-                    if app.tab().viewport.column_offset > 0 {
+                    let min_offset = app.tab().viewport.frozen_cols;
+                    if app.tab().viewport.column_offset > min_offset {
                         let hidden = &app.tab().hidden_columns;
                         let max_col = app.tab().data.schema.as_ref()
                             .map_or(0, |s| s.fields().len().saturating_sub(1));
                         let new_off = next_visible_col(app.tab().viewport.column_offset, -1, hidden, max_col);
-                        app.tab_mut().viewport.column_offset = new_off;
+                        app.tab_mut().viewport.column_offset = new_off.max(min_offset);
                     }
                 }
                 SelectionMode::Column => {
@@ -110,40 +116,50 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
-        KeyCode::Char('$') => {
-            let filter = &mut app.tab_mut().filter;
-            filter.input.clear();
-            filter.cursor_pos = 0;
-            app.mode = AppMode::Regex;
-        }
-
         // Sort
         KeyCode::Char('s') => app.cycle_sort(),
 
+        // Reset view
+        KeyCode::Char('r') => {
+            let tab = app.tab_mut();
+            tab.search = SearchState::new();
+            tab.filter.active_filter = None;
+            tab.data.sort_state.clear();
+            tab.hidden_columns.fill(false);
+            tab.viewport.view_start = 0;
+            tab.viewport.selected_row = 0;
+            tab.viewport.column_offset = 0;
+            tab.viewport.selected_col = 0;
+            tab.col_width_cache.replace(None);
+            app.send_action(Action::ResetFilter);
+            app.send_action(Action::ApplySort(SortState::default()));
+            app.status_message = Some("View reset".into());
+            app.ensure_buffer();
+        }
+
         // Stats overlay
         KeyCode::Char('S') => {
-            app.mode = AppMode::Stats;
-            app.stats.loading = true;
-            app.stats.batch = None;
-            app.stats.schema = None;
-            app.stats.scroll_offset = 0;
-            let table = app
-                .tab()
-                .data
-                .table_name
-                .as_deref()
-                .unwrap_or("data")
-                .to_string();
-            app.status_message = Some("Loading statistics...".to_string());
-            app.send_action(Action::ExecuteSql(format!("SUMMARIZE {table}")));
+            app.transition_to(AppMode::Overlay(OverlayVariant::Stats));
+        }
+
+        // Column jump (fuzzy find)
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(ref schema) = app.tab().data.schema {
+                let columns: Vec<(usize, String)> = schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (i, f.name().clone()))
+                    .collect();
+                app.column_jump.populate(columns);
+                app.transition_to(AppMode::Overlay(OverlayVariant::ColumnJump));
+            }
         }
 
         // Search / Filter
         KeyCode::Char('/') => {
-            let filter = &mut app.tab_mut().filter;
-            filter.input.clear();
-            filter.cursor_pos = 0;
-            app.mode = AppMode::Search;
+            app.text_input.clear();
+            app.mode = AppMode::Input(InputVariant::Search);
         }
         KeyCode::Char('f') => {
             // Column-specific filter shortcut: pre-fill with current column name
@@ -152,40 +168,33 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 if !fields.is_empty() {
                     let col_idx = app.tab().viewport.selected_col.min(fields.len() - 1);
                     let col_name = fields[col_idx].name().clone();
-                    let filter = &mut app.tab_mut().filter;
-                    filter.input = format!("\"{}\" = ", col_name);
-                    filter.move_cursor_to_end();
-                    app.mode = AppMode::Filter;
+                    app.text_input.set(&format!("\"{}\" = ", col_name));
+                    app.mode = AppMode::Input(InputVariant::Filter);
                 }
             }
         }
         KeyCode::Esc => {
-            let had_search = app.tab().search.active_search.is_some();
-            let had_filter = app.tab().filter.active_filter.is_some();
+            let has_search = app.tab().search.active_search.is_some();
+            let has_filter = app.tab().filter.active_filter.is_some();
 
-            // Clear both at once
-            if had_search {
+            if has_search {
+                // First Esc: clear search
                 let tab = app.tab_mut();
                 tab.search.active_search = None;
                 tab.search.match_count = None;
                 tab.search.match_index = None;
                 tab.search.match_rows.clear();
-            }
-            if had_filter {
-                app.send_action(Action::ResetFilter);
-                app.tab_mut().filter.input.clear();
-            }
-
-            if had_search && !had_filter {
                 app.status_message = Some("Search cleared".to_string());
+            } else if has_filter {
+                // Second Esc: clear filter
+                app.send_action(Action::ResetFilter);
+                app.tab_mut().filter.active_filter = None;
             }
         }
 
         // SQL scratchpad
         KeyCode::Char('e') => {
-            app.mode = AppMode::Sql;
-            // Reset SQL pad state but keep previous SQL text
-            app.sql.error = None;
+            app.transition_to(AppMode::Sql);
         }
 
         // Search navigation (n/N always navigate search matches)
@@ -200,17 +209,46 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
 
-        // Diff mode
-        KeyCode::Char('D') => {
-            app.enter_diff_setup();
-        }
-
         // Go-to-row
         KeyCode::Char(':') => {
-            let filter = &mut app.tab_mut().filter;
-            filter.input.clear();
-            filter.cursor_pos = 0;
-            app.mode = AppMode::GoToRow;
+            app.text_input.clear();
+            app.text_input.char_filter = Some(|c: char| c.is_ascii_digit());
+            app.mode = AppMode::Input(InputVariant::GoToRow);
+        }
+
+        // Mark/unmark row
+        KeyCode::Char('m') => {
+            let row = app.tab().viewport.selected_row;
+            let was_marked = app.tab().marked_rows.contains(&row);
+            if was_marked {
+                app.tab_mut().marked_rows.remove(&row);
+            } else {
+                app.tab_mut().marked_rows.insert(row);
+            }
+            let total = app.tab().marked_rows.len();
+            if was_marked {
+                app.status_message = Some(format!("Unmarked row {} ({total} marked)", row + 1));
+            } else {
+                app.status_message = Some(format!("Marked row {} ({total} marked)", row + 1));
+            }
+        }
+        // Clear all marks
+        KeyCode::Char('M') => {
+            let count = app.tab().marked_rows.len();
+            if count > 0 {
+                app.tab_mut().marked_rows.clear();
+                app.status_message = Some(format!("Cleared {count} mark(s)"));
+            } else {
+                app.status_message = Some("No marks to clear".into());
+            }
+        }
+
+        // Mark navigation
+        KeyCode::Char('}') => {
+            super::search::jump_to_next_mark(app);
+        }
+        KeyCode::Char('{') => {
+            super::search::jump_to_prev_mark(app);
         }
 
         // Column hide picker
@@ -222,32 +260,36 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 } else {
                     vec![false; columns.len()]
                 };
-                app.diff.setup.columns = columns;
-                app.diff.setup.selected = selected;
-                app.diff.setup.cursor = 0;
-                app.mode = AppMode::ColumnHide;
+                app.column_picker.populate(columns, selected);
+                app.mode = AppMode::Overlay(OverlayVariant::ColumnPicker);
             }
         }
 
-        // Per-column width adjust
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            let col = app.tab().viewport.selected_col;
-            let overrides = &mut app.tab_mut().viewport.col_width_overrides;
-            if col < overrides.len() {
-                overrides[col] = (overrides[col] + COL_WIDTH_STEP).min(MAX_COL_WIDTH_OVERRIDE);
+        // Freeze/unfreeze columns
+        KeyCode::Char('F') => {
+            let frozen = app.tab().viewport.frozen_cols;
+            let offset = app.tab().viewport.column_offset;
+            if frozen > 0 {
+                app.tab_mut().viewport.frozen_cols = 0;
+                app.status_message = Some("Columns unfrozen".into());
+            } else if offset > 0 {
+                app.tab_mut().viewport.frozen_cols = offset;
+                app.status_message = Some(format!("Froze {} column(s)", offset));
+            } else {
+                app.status_message = Some("Scroll right first, then freeze".into());
             }
         }
-        KeyCode::Char('-') => {
-            let col = app.tab().viewport.selected_col;
-            let overrides = &mut app.tab_mut().viewport.col_width_overrides;
-            if col < overrides.len() {
-                overrides[col] = (overrides[col] - COL_WIDTH_STEP).max(MIN_COL_WIDTH_OVERRIDE);
-            }
+
+        // Toggle line wrapping
+        KeyCode::Char('W') => {
+            app.wrap = !app.wrap;
+            app.tab_mut().col_width_cache.replace(None);
+            app.status_message = Some(if app.wrap { "Wrap: on" } else { "Wrap: off" }.into());
         }
 
         // Help
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
+            app.mode = AppMode::Overlay(OverlayVariant::Help);
         }
 
         // Tab switching

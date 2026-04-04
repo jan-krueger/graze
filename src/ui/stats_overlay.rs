@@ -2,13 +2,14 @@ use duckdb::arrow::array::{Array, AsArray};
 use duckdb::arrow::datatypes::DataType;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::ui::table_render::{TableStyler, UnifiedTable};
 use crate::ui::theme::Theme;
+use super::popup::Popup;
 
 pub struct StatsOverlay<'a> {
     app: &'a App,
@@ -78,51 +79,35 @@ impl TableStyler for StatsStyler<'_> {
 
 impl Widget for StatsOverlay<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height < 3 || area.width < 10 {
+        if area.height < 5 || area.width < 20 {
             return;
         }
 
         let theme = &self.app.theme;
-        let header_y = area.y;
-
-        let header_style = Style::default()
-            .bg(theme.diff_header_bg)
-            .fg(theme.diff_header_fg)
-            .add_modifier(Modifier::BOLD);
-
-        buf.set_string(
-            area.x,
-            header_y,
-            " ".repeat(area.width as usize),
-            header_style,
-        );
-
         let scroll_offset = self.app.stats.scroll_offset;
-        let header_text = if let Some(ref b) = self.app.stats.batch {
-            let total = b.num_rows();
-            if total > 0 {
-                format!(" Statistics | {}/{} | Esc ", scroll_offset + 1, total)
-            } else {
-                " Statistics | Esc ".to_string()
-            }
+
+        // Popup dimensions: 80% of width, most of height
+        let content_width = ((area.width as usize) * 80 / 100).max(30);
+        let content_height = (area.height as usize).saturating_sub(8).max(3);
+
+        let footer = if self.app.stats.loading {
+            "Loading..."
         } else {
-            " Statistics | Esc ".to_string()
+            "j/k:scroll  g/G:top/bottom  Esc:close"
         };
-        buf.set_string(area.x, header_y, &header_text, header_style);
+
+        let popup = Popup::new("Statistics", footer, content_width, content_height, theme);
+        let inner = popup.render_frame(area, buf);
+
+        // Tell the handler how many data rows are visible (inner height minus table header).
+        self.app.stats.visible_rows.set((inner.height as usize).saturating_sub(1));
 
         if self.app.stats.loading {
-            let loading_style = Style::default().fg(Color::Yellow);
-            let msg = "Loading statistics...";
-            let msg_y = header_y + 1;
-            if msg_y < area.y + area.height {
-                buf.set_string(
-                    area.x,
-                    msg_y,
-                    " ".repeat(area.width as usize),
-                    Style::default(),
-                );
-                buf.set_string(area.x + 1, msg_y, msg, loading_style);
-            }
+            let spinner = self.app.spinner_char();
+            let msg = format!("{} Loading statistics...", spinner);
+            let msg_x = inner.x + (inner.width.saturating_sub(msg.len() as u16)) / 2;
+            let msg_y = inner.y + inner.height / 2;
+            buf.set_string(msg_x, msg_y, &msg, Style::default().fg(Color::Yellow));
             return;
         }
 
@@ -184,8 +169,8 @@ impl Widget for StatsOverlay<'_> {
             };
 
         // Compute column_type width adjustment for arrow type overrides
+        let data_rows_height = inner.height as usize;
         let col_width_adj: Vec<(usize, u16)> = if let Some(ct_idx) = column_type_idx {
-            let data_rows_height = (area.height as usize).saturating_sub(2);
             let sample_end = (scroll_offset + data_rows_height).min(batch_rows);
             let mut max_w: u16 = 0;
             for row in scroll_offset..sample_end {
@@ -214,20 +199,12 @@ impl Widget for StatsOverlay<'_> {
             theme,
         };
 
-        // Table area starts below the cyan header bar
-        let table_area = Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width,
-            height: area.height.saturating_sub(1),
-        };
-
         UnifiedTable::new(schema, batch, &styler)
             .scroll_offset(scroll_offset)
             .left_margin(1)
             .max_col_width(40)
             .show_types(false)
             .col_width_mins(&col_width_adj)
-            .render(table_area, buf);
+            .render(inner, buf);
     }
 }

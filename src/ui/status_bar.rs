@@ -3,8 +3,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-use crate::app::{App, AppMode};
-use crate::state::{SearchMode, SelectionMode};
+use crate::app::App;
+use crate::mode::AppMode;
+use crate::state::SelectionMode;
 
 pub struct StatusBar<'a> {
     app: &'a App,
@@ -36,8 +37,8 @@ impl Widget for StatusBar<'_> {
 
         let mut x = area.x + mode_str.len() as u16;
 
-        // Selection mode indicator (only in Normal mode)
-        if self.app.mode == AppMode::Normal {
+        // Selection mode indicator (show in Normal and Input modes)
+        if matches!(self.app.mode, AppMode::Normal | AppMode::Input(_)) {
             let sel_str = match tab.viewport.selection_mode {
                 SelectionMode::Row => " ROW ",
                 SelectionMode::Column => " COL ",
@@ -76,12 +77,22 @@ impl Widget for StatusBar<'_> {
             x += pos_str.len() as u16;
         }
 
-        // Wide indicator (any column width override)
-        if tab.viewport.col_width_overrides.iter().any(|&v| v != 0) {
-            let wide_str = " [WIDE] ";
-            let wide_style = bg_style.fg(Color::Cyan);
-            buf.set_string(x, area.y, wide_str, wide_style);
-            x += wide_str.len() as u16;
+        // Marked rows indicator
+        if !tab.marked_rows.is_empty() {
+            let n = tab.marked_rows.len();
+            let mark_str = format!(" [{n} marked] ");
+            let mark_style = bg_style.fg(Color::Yellow);
+            buf.set_string(x, area.y, &mark_str, mark_style);
+            x += mark_str.len() as u16;
+        }
+
+        // Frozen columns indicator
+        if tab.viewport.frozen_cols > 0 {
+            let n = tab.viewport.frozen_cols;
+            let freeze_str = format!(" [FREEZE:{n}] ");
+            let freeze_style = bg_style.fg(Color::Cyan);
+            buf.set_string(x, area.y, &freeze_str, freeze_style);
+            x += freeze_str.len() as u16;
         }
 
         // Active filter indicator
@@ -94,10 +105,7 @@ impl Widget for StatusBar<'_> {
 
         // Active search indicator
         if let Some(ref search) = tab.search.active_search {
-            let (label, color) = match tab.search.search_mode {
-                SearchMode::Regex => ("Regex", Color::Magenta),
-                SearchMode::Plain => ("Search", Color::Yellow),
-            };
+            let (label, color) = ("Search", Color::Yellow);
             let search_str = if tab.search_pending {
                 format!(" [{}: {} (searching...)] ", label, search)
             } else {

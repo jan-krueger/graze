@@ -101,6 +101,7 @@ pub fn compute_column_widths(
 /// Determine which columns fit in the available width, starting from `column_offset`.
 /// `left_margin` is the width used before the first column (e.g. 3 for row prefix ">> ").
 /// `hidden` optionally specifies which columns are hidden and should be skipped.
+/// `frozen_cols` specifies the number of leftmost columns pinned to the left side.
 pub fn visible_columns(
     col_widths: &[u16],
     available_width: usize,
@@ -108,11 +109,38 @@ pub fn visible_columns(
     left_margin: usize,
     hidden: Option<&[bool]>,
 ) -> Vec<usize> {
+    visible_columns_with_freeze(col_widths, available_width, column_offset, left_margin, hidden, 0)
+}
+
+pub fn visible_columns_with_freeze(
+    col_widths: &[u16],
+    available_width: usize,
+    column_offset: usize,
+    left_margin: usize,
+    hidden: Option<&[bool]>,
+    frozen_cols: usize,
+) -> Vec<usize> {
     let mut visible_cols = Vec::new();
     let mut used_width = left_margin;
+    let is_hidden = |i: usize| hidden.map_or(false, |h| h.get(i).copied().unwrap_or(false));
 
-    for i in column_offset..col_widths.len() {
-        if hidden.map_or(false, |h| h.get(i).copied().unwrap_or(false)) {
+    // First: include frozen columns (0..frozen_cols)
+    for i in 0..frozen_cols.min(col_widths.len()) {
+        if is_hidden(i) {
+            continue;
+        }
+        let col_total = col_widths[i] as usize + 2;
+        if used_width + col_total > available_width && !visible_cols.is_empty() {
+            return visible_cols;
+        }
+        visible_cols.push(i);
+        used_width += col_total;
+    }
+
+    // Then: include scrollable columns from column_offset onward (skip frozen ones)
+    let start = column_offset.max(frozen_cols);
+    for i in start..col_widths.len() {
+        if is_hidden(i) {
             continue;
         }
         let col_total = col_widths[i] as usize + 2;
@@ -133,6 +161,28 @@ pub fn build_formatters(batch: &RecordBatch) -> Vec<Option<ArrayFormatter<'_>>> 
             ArrayFormatter::try_new(batch.column(i).as_ref(), &Default::default()).ok()
         })
         .collect()
+}
+
+/// Split text into lines that each fit within `width` display columns.
+pub fn wrap_lines(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut w = 0;
+    for ch in text.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > width && w > 0 {
+            lines.push(line);
+            line = String::new();
+            w = 0;
+        }
+        line.push(ch);
+        w += cw;
+    }
+    lines.push(line);
+    lines
 }
 
 /// Truncate a string to fit within `width` characters, appending ellipsis if needed.
@@ -226,13 +276,19 @@ pub struct UnifiedTable<'a> {
     col_width_mins: Option<&'a [(usize, u16)]>,
     /// Optional per-column hidden flags.
     hidden: Option<&'a [bool]>,
-    /// Optional per-column max width caps.
-    col_width_caps: Option<&'a [u16]>,
     /// When set, render 1-based row numbers in a left gutter.
     /// Value is (absolute_row_of_first_batch_row, total_rows) for width calculation.
     row_numbers: Option<(usize, usize)>,
     /// Theme for colors.
     theme: Option<&'a Theme>,
+    /// Precomputed column widths to skip `compute_column_widths`.
+    precomputed_widths: Option<(&'a [String], &'a [u16])>,
+    /// When true, wrap cell content to multiple terminal lines instead of truncating.
+    wrap: bool,
+    /// When set, the renderer writes how many complete data rows were rendered.
+    rows_rendered: Option<&'a std::cell::Cell<usize>>,
+    /// Number of frozen (pinned) left columns.
+    frozen_cols: usize,
 }
 
 impl<'a> UnifiedTable<'a> {
@@ -253,9 +309,12 @@ impl<'a> UnifiedTable<'a> {
             styler,
             col_width_mins: None,
             hidden: None,
-            col_width_caps: None,
             row_numbers: None,
             theme: None,
+            precomputed_widths: None,
+            wrap: false,
+            rows_rendered: None,
+            frozen_cols: 0,
         }
     }
 
@@ -301,12 +360,6 @@ impl<'a> UnifiedTable<'a> {
         self
     }
 
-    /// Provide per-column max width caps.
-    pub fn col_width_caps(mut self, caps: &'a [u16]) -> Self {
-        self.col_width_caps = Some(caps);
-        self
-    }
-
     /// Enable row numbers in a left gutter.
     /// `base` is the absolute 0-based row index of the first row in the batch.
     /// `total_rows` is the total dataset size (used to determine gutter width).
@@ -317,6 +370,26 @@ impl<'a> UnifiedTable<'a> {
 
     pub fn theme(mut self, theme: &'a Theme) -> Self {
         self.theme = Some(theme);
+        self
+    }
+
+    pub fn precomputed_widths(mut self, headers: &'a [String], widths: &'a [u16]) -> Self {
+        self.precomputed_widths = Some((headers, widths));
+        self
+    }
+
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
+    }
+
+    pub fn rows_rendered(mut self, cell: &'a std::cell::Cell<usize>) -> Self {
+        self.rows_rendered = Some(cell);
+        self
+    }
+
+    pub fn frozen_cols(mut self, n: usize) -> Self {
+        self.frozen_cols = n;
         self
     }
 }
@@ -364,14 +437,18 @@ impl Widget for UnifiedTable<'_> {
         let data_area_height = (area.height as usize).saturating_sub(1); // minus header row
         let sample_end = (self.scroll_offset + data_area_height).min(batch_rows);
 
-        let (headers, mut col_widths) = compute_column_widths(
-            self.schema,
-            self.batch,
-            &formatters,
-            &*header_fn,
-            (self.scroll_offset, sample_end),
-            self.max_col_width,
-        );
+        let (headers, mut col_widths) = if let Some((h, w)) = self.precomputed_widths {
+            (h.to_vec(), w.to_vec())
+        } else {
+            compute_column_widths(
+                self.schema,
+                self.batch,
+                &formatters,
+                &*header_fn,
+                (self.scroll_offset, sample_end),
+                self.max_col_width,
+            )
+        };
 
         // Apply per-column minimum width overrides
         if let Some(mins) = self.col_width_mins {
@@ -382,26 +459,32 @@ impl Widget for UnifiedTable<'_> {
             }
         }
 
-        // Apply per-column max width caps
-        if let Some(caps) = self.col_width_caps {
-            for (i, width) in col_widths.iter_mut().enumerate() {
-                if let Some(&cap) = caps.get(i) {
-                    *width = (*width).min(cap).max(4);
-                }
-            }
-        }
-
-        let visible_cols = visible_columns(
+        let visible_cols = visible_columns_with_freeze(
             &col_widths,
             area.width as usize,
             self.column_offset,
             effective_left_margin,
             self.hidden,
+            self.frozen_cols,
         );
 
         if visible_cols.is_empty() {
             return;
         }
+
+        // Find the x position where frozen columns end (for separator)
+        let frozen_separator_x = if self.frozen_cols > 0 {
+            let mut fx = area.x + effective_left_margin as u16;
+            for &col_idx in &visible_cols {
+                if col_idx >= self.frozen_cols {
+                    break;
+                }
+                fx += col_widths[col_idx] + 2;
+            }
+            Some(fx.saturating_sub(1))
+        } else {
+            None
+        };
 
         let gutter_style = Style::default().fg(theme.gutter_fg);
         let num_col_width = gutter_w.saturating_sub(1); // digits only, no separator
@@ -473,53 +556,76 @@ impl Widget for UnifiedTable<'_> {
             x += col_widths[col_idx] + 2;
         }
 
+        // Draw frozen separator on header
+        if let Some(sep_x) = frozen_separator_x {
+            if sep_x < area.x + area.width {
+                let sep_style = Style::default().fg(theme.dim);
+                buf.set_string(sep_x, header_y, "\u{2502}", sep_style);
+            }
+        }
+
         // --- Render data rows ---
         let data_start_y = header_y + 1;
+        let mut y_cursor = data_start_y;
+        let max_y = area.y + area.height;
+        let mut rows_count = 0usize;
 
-        for display_row in 0..data_area_height {
-            let row_y = data_start_y + display_row as u16;
-            if row_y >= area.y + area.height {
+        let mut data_row_idx = self.scroll_offset;
+        while y_cursor < max_y && data_row_idx < batch_rows {
+            let data_row = data_row_idx;
+            let row_bg = self.styler.row_bg(data_row);
+
+            // Compute row height (1 when not wrapping)
+            let row_height = if self.wrap {
+                let mut max_h = 1usize;
+                for &col_idx in &visible_cols {
+                    let width = col_widths[col_idx] as usize;
+                    let column = self.batch.column(col_idx);
+                    let is_null = column.is_null(data_row);
+                    let val = if is_null {
+                        "NULL".to_string()
+                    } else if let Some(ref fmt) = formatters[col_idx] {
+                        fmt.value(data_row).to_string()
+                    } else {
+                        "?".to_string()
+                    };
+                    let lines = wrap_lines(&val, width);
+                    max_h = max_h.max(lines.len());
+                }
+                max_h
+            } else {
+                1
+            };
+
+            // Check if this row fits (at least the first line must fit)
+            if y_cursor >= max_y {
                 break;
             }
 
-            let data_row = self.scroll_offset + display_row;
-
-            if data_row >= batch_rows {
-                buf.set_string(
-                    area.x,
-                    row_y,
-                    " ".repeat(area.width as usize),
-                    Style::default(),
-                );
-                continue;
+            // Clear all lines for this row
+            for line_off in 0..row_height {
+                let ry = y_cursor + line_off as u16;
+                if ry >= max_y {
+                    break;
+                }
+                buf.set_string(area.x, ry, " ".repeat(area.width as usize), row_bg);
             }
 
-            let row_bg = self.styler.row_bg(data_row);
-
-            // Clear line with row background
-            buf.set_string(
-                area.x,
-                row_y,
-                " ".repeat(area.width as usize),
-                row_bg,
-            );
-
-            // Row number gutter
+            // Row number gutter (only on first line of row)
             if self.row_numbers.is_some() {
                 let abs_row = row_num_base + data_row + 1; // 1-based
                 let num_str = format!("{:>width$} ", abs_row, width = num_col_width);
-                // Use the row background to detect selection and pick a readable color
                 let num_style = if row_bg.bg == Some(theme.selected_bg) {
                     row_bg.fg(Color::Yellow)
                 } else {
                     gutter_style
                 };
-                buf.set_string(area.x, row_y, &num_str, num_style);
+                buf.set_string(area.x, y_cursor, &num_str, num_style);
             }
 
-            // Row prefix (e.g. ">> " for selected row)
+            // Row prefix (only on first line)
             let (prefix, prefix_style) = self.styler.row_prefix(data_row);
-            buf.set_string(area.x + gutter_w as u16, row_y, prefix, prefix_style);
+            buf.set_string(area.x + gutter_w as u16, y_cursor, prefix, prefix_style);
 
             // Cells
             let mut x = area.x + effective_left_margin as u16;
@@ -529,7 +635,7 @@ impl Widget for UnifiedTable<'_> {
                 let is_null = column.is_null(data_row);
 
                 let formatted = if is_null {
-                    String::new() // styler handles NULL display
+                    String::new()
                 } else if let Some(ref fmt) = formatters[col_idx] {
                     fmt.value(data_row).to_string()
                 } else {
@@ -539,14 +645,60 @@ impl Widget for UnifiedTable<'_> {
                 let (display_val, cell_style) =
                     self.styler.cell(col_idx, data_row, &formatted, is_null, row_bg);
 
-                buf.set_string(
-                    x,
-                    row_y,
-                    &truncate_to_width(&display_val, width),
-                    cell_style,
-                );
+                if self.wrap && row_height > 1 {
+                    let lines = wrap_lines(&display_val, width);
+                    for (line_off, line) in lines.iter().enumerate() {
+                        let ry = y_cursor + line_off as u16;
+                        if ry >= max_y {
+                            break;
+                        }
+                        let padded = format!("{:<width$}", line, width = width);
+                        buf.set_string(x, ry, &padded, cell_style);
+                    }
+                } else {
+                    buf.set_string(
+                        x,
+                        y_cursor,
+                        &truncate_to_width(&display_val, width),
+                        cell_style,
+                    );
+                }
                 x += col_widths[col_idx] + 2;
             }
+
+            // Draw frozen separator for each line of this row
+            if let Some(sep_x) = frozen_separator_x {
+                if sep_x < area.x + area.width {
+                    let sep_style = Style::default().fg(theme.dim);
+                    for line_off in 0..row_height {
+                        let ry = y_cursor + line_off as u16;
+                        if ry >= max_y {
+                            break;
+                        }
+                        buf.set_string(sep_x, ry, "\u{2502}", sep_style);
+                    }
+                }
+            }
+
+            y_cursor += row_height as u16;
+            rows_count += 1;
+            data_row_idx += 1;
+        }
+
+        // Clear remaining lines
+        while y_cursor < max_y {
+            buf.set_string(
+                area.x,
+                y_cursor,
+                " ".repeat(area.width as usize),
+                Style::default(),
+            );
+            y_cursor += 1;
+        }
+
+        // Report how many data rows were rendered
+        if let Some(cell) = self.rows_rendered {
+            cell.set(rows_count);
         }
     }
 }

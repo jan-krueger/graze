@@ -1,3 +1,4 @@
+pub mod column_jump;
 pub mod column_picker;
 pub mod diff_view;
 pub mod help_overlay;
@@ -16,10 +17,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::app::{App, AppMode};
+use crate::app::App;
+use crate::mode::{AppMode, InputVariant, OverlayVariant};
 
+use self::column_jump::ColumnJump;
 use self::column_picker::ColumnPicker;
-use self::diff_view::DiffView;
 use self::help_overlay::HelpOverlay;
 use self::input_bar::InputBar;
 use self::sql_pad::SqlPad;
@@ -27,6 +29,9 @@ use self::stats_overlay::StatsOverlay;
 use self::status_bar::StatusBar;
 use self::tab_bar::TabBar;
 use self::table::TableView;
+
+const AUTOCOMPLETE_MAX_VISIBLE: usize = 5;
+pub const INPUT_PROMPT_WIDTH: u16 = 8;
 
 pub struct AppView<'a> {
     app: &'a App,
@@ -43,8 +48,10 @@ impl Widget for AppView<'_> {
         // If multiple tabs, split off a tab bar row at the top
         let (tab_area, main_area) = if self.app.has_tabs() {
             let split = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            self.app.tab_bar_y.set(Some(split[0].y));
             (Some(split[0]), split[1])
         } else {
+            self.app.tab_bar_y.set(None);
             (None, area)
         };
 
@@ -52,92 +59,80 @@ impl Widget for AppView<'_> {
             TabBar::new(self.app).render(tab_area, buf);
         }
 
-        let show_input_bar = matches!(
-            self.app.mode,
-            AppMode::Filter | AppMode::Search | AppMode::Regex | AppMode::GoToRow
-        );
-        let show_sql = matches!(self.app.mode, AppMode::Sql);
-        let show_stats = matches!(self.app.mode, AppMode::Stats);
-        let show_diff_setup = matches!(
-            self.app.mode,
-            AppMode::DiffSetupKey | AppMode::DiffSetupCols
-        );
-        let show_column_hide = matches!(self.app.mode, AppMode::ColumnHide);
-        let show_diff = matches!(self.app.mode, AppMode::Diff);
-        let show_help = matches!(self.app.mode, AppMode::Help);
-
         let chunks = Layout::vertical(self.app.mode.layout_constraints()).split(main_area);
 
-        if show_help {
-            TableView::new(self.app).render(chunks[0], buf);
-            StatusBar::new(self.app).render(chunks[1], buf);
-            HelpOverlay::new(self.app).render(area, buf);
-        } else if show_column_hide {
-            TableView::new(self.app).render(chunks[0], buf);
-            StatusBar::new(self.app).render(chunks[1], buf);
-            ColumnPicker::new(self.app).render(area, buf);
-        } else if show_diff_setup {
-            TableView::new(self.app).render(chunks[0], buf);
-            StatusBar::new(self.app).render(chunks[1], buf);
-            ColumnPicker::new(self.app).render(area, buf);
-        } else if show_diff {
-            DiffView::new(self.app).render(chunks[0], buf);
-            StatusBar::new(self.app).render(chunks[1], buf);
-        } else if show_stats {
-            TableView::new(self.app).render(chunks[0], buf);
-            StatsOverlay::new(self.app).render(chunks[1], buf);
-            StatusBar::new(self.app).render(chunks[2], buf);
-        } else if show_sql {
-            if let (Some(schema), Some(batch)) = (
-                self.app.sql.result_schema.as_ref(),
-                self.app.sql.result.as_ref(),
-            ) {
-                use crate::ui::table_render::{DefaultStyler, UnifiedTable};
-                let styler = DefaultStyler { theme: &self.app.theme };
-                UnifiedTable::new(schema, batch, &styler)
-                    .theme(&self.app.theme)
-                    .render(chunks[0], buf);
-            } else {
+        match &self.app.mode {
+            AppMode::Overlay(OverlayVariant::Help) => {
                 TableView::new(self.app).render(chunks[0], buf);
+                StatusBar::new(self.app).render(chunks[1], buf);
+                HelpOverlay::new(self.app).render(area, buf);
             }
-            SqlPad::new(self.app).render(chunks[1], buf);
-            StatusBar::new(self.app).render(chunks[2], buf);
-        } else if show_input_bar {
-            TableView::new(self.app).render(chunks[0], buf);
-            let prompt = match self.app.mode {
-                AppMode::Regex => "Regex:  ",
-                AppMode::Filter => "Filter: ",
-                AppMode::GoToRow => "Goto:   ",
-                _ => "Search: ",
-            };
-            InputBar::new(self.app, prompt, &self.app.tab().filter.input)
-                .render(chunks[1], buf);
-            StatusBar::new(self.app).render(chunks[2], buf);
-            if self.app.mode == AppMode::Filter {
-                render_autocomplete_popup(self.app, chunks[1].y, main_area, buf);
+            AppMode::Overlay(OverlayVariant::ColumnPicker) => {
+                TableView::new(self.app).render(chunks[0], buf);
+                StatusBar::new(self.app).render(chunks[1], buf);
+                ColumnPicker::new(self.app).render(area, buf);
             }
-        } else {
-            TableView::new(self.app).render(chunks[0], buf);
-            StatusBar::new(self.app).render(chunks[1], buf);
+            AppMode::Overlay(OverlayVariant::Stats) => {
+                TableView::new(self.app).render(chunks[0], buf);
+                StatusBar::new(self.app).render(chunks[1], buf);
+                StatsOverlay::new(self.app).render(area, buf);
+            }
+            AppMode::Overlay(OverlayVariant::ColumnJump) => {
+                TableView::new(self.app).render(chunks[0], buf);
+                StatusBar::new(self.app).render(chunks[1], buf);
+                ColumnJump::new(self.app).render(area, buf);
+            }
+            AppMode::Sql => {
+                if let (Some(schema), Some(batch)) = (
+                    self.app.sql.result_schema.as_ref(),
+                    self.app.sql.result.as_ref(),
+                ) {
+                    use crate::ui::table_render::{DefaultStyler, UnifiedTable};
+                    let styler = DefaultStyler { theme: &self.app.theme };
+                    UnifiedTable::new(schema, batch, &styler)
+                        .theme(&self.app.theme)
+                        .render(chunks[0], buf);
+                } else {
+                    TableView::new(self.app).render(chunks[0], buf);
+                }
+                SqlPad::new(self.app).render(chunks[1], buf);
+                StatusBar::new(self.app).render(chunks[2], buf);
+            }
+            AppMode::Input(variant) => {
+                TableView::new(self.app).render(chunks[0], buf);
+                let prompt = match variant {
+                    InputVariant::Filter => "Filter: ",
+                    InputVariant::GoToRow => "Goto:   ",
+                    InputVariant::Search => "Search: ",
+                };
+                InputBar::new(self.app, prompt, &self.app.text_input.input)
+                    .render(chunks[1], buf);
+                StatusBar::new(self.app).render(chunks[2], buf);
+                if *variant == InputVariant::Filter {
+                    render_autocomplete_popup(self.app, chunks[1].y, main_area, buf);
+                }
+            }
+            _ => {
+                TableView::new(self.app).render(chunks[0], buf);
+                StatusBar::new(self.app).render(chunks[1], buf);
+            }
         }
     }
 }
 
 /// Render the autocomplete popup above the filter bar.
 fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut Buffer) {
-    if !app.tab().filter.autocomplete_active || app.tab().filter.autocomplete_suggestions.is_empty()
-    {
+    if !app.autocomplete.active || app.autocomplete.suggestions.is_empty() {
         return;
     }
 
-    let max_visible = 5usize;
-    let count = app.tab().filter.autocomplete_suggestions.len();
+    let max_visible = AUTOCOMPLETE_MAX_VISIBLE;
+    let count = app.autocomplete.suggestions.len();
     let visible_count = count.min(max_visible);
 
     let selected = app
-        .tab()
-        .filter
-        .autocomplete_index
+        .autocomplete
+        .selected_index
         .min(count.saturating_sub(1));
     let scroll_start = if selected >= visible_count {
         selected - visible_count + 1
@@ -146,9 +141,8 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     };
 
     let max_name_len = app
-        .tab()
-        .filter
-        .autocomplete_suggestions
+        .autocomplete
+        .suggestions
         .iter()
         .skip(scroll_start)
         .take(visible_count)
@@ -158,8 +152,8 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     let popup_width = (max_name_len + 4).min(area.width as usize);
 
     let dollar_x = {
-        let prompt_len = 8u16;
-        let input = &app.tab().filter.input;
+        let prompt_len = INPUT_PROMPT_WIDTH;
+        let input = &app.text_input.input;
         if let Some(pos) = input.rfind('$') {
             area.x + prompt_len + pos as u16
         } else {
@@ -177,9 +171,8 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
     let selected_style = Style::default().fg(theme.fg).bg(theme.selected_bg);
 
     for (i, suggestion) in app
-        .tab()
-        .filter
-        .autocomplete_suggestions
+        .autocomplete
+        .suggestions
         .iter()
         .skip(scroll_start)
         .take(visible_count)
@@ -202,4 +195,3 @@ fn render_autocomplete_popup(app: &App, filter_bar_y: u16, area: Rect, buf: &mut
         buf.set_string(popup_x, y, &display, style);
     }
 }
-

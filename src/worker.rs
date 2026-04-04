@@ -62,8 +62,8 @@ impl Worker {
                 Action::ApplySort(state) => self.handle_apply_sort(state),
                 Action::Filter(filter) => self.handle_filter(filter),
                 Action::ResetFilter => self.handle_reset_filter(),
-                Action::CollectMatches { term, is_regex } => {
-                    self.handle_collect_matches(term, is_regex)
+                Action::CollectMatches(term) => {
+                    self.handle_collect_matches(term)
                 }
                 Action::ExecuteSql(sql) => self.handle_execute_sql(sql),
                 Action::LoadBatch { batch, schema, name } => {
@@ -214,10 +214,10 @@ impl Worker {
     }
 
     fn handle_filter(&mut self, filter: String) {
-        self.current_filter = Some(filter.clone());
         if let Some(ref mut provider) = self.provider {
             match provider.apply_filter(&filter) {
                 Ok(total_rows) => {
+                    self.current_filter = Some(filter);
                     let _ = self
                         .event_tx
                         .send(DataEvent::FilterApplied { total_rows });
@@ -259,9 +259,9 @@ impl Worker {
         }
     }
 
-    fn handle_collect_matches(&self, term: String, is_regex: bool) {
+    fn handle_collect_matches(&self, term: String) {
         if let Some(ref provider) = self.provider {
-            match provider.collect_match_rows(&term, is_regex) {
+            match provider.collect_match_rows(&term) {
                 Ok(rows) => {
                     let _ = self.event_tx.send(DataEvent::MatchesCollected { rows });
                 }

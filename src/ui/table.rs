@@ -3,9 +3,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
+use std::collections::HashSet;
+
 use crate::app::App;
 use crate::search::SearchMatcher;
-use crate::state::{SearchMode, SelectionMode};
+use crate::state::SelectionMode;
 use crate::ui::table_render::{UnifiedTable, TableStyler};
 
 #[derive(Debug)]
@@ -13,6 +15,8 @@ struct SimpleFilter {
     column: String,
     op: String,
     value: String,
+    /// Pre-lowercased value, computed once at parse time for ILIKE.
+    value_lower: String,
 }
 
 fn parse_simple_filter(filter: &str) -> Option<SimpleFilter> {
@@ -32,10 +36,12 @@ fn parse_simple_filter(filter: &str) -> Option<SimpleFilter> {
             let val_part = trimmed[pos + kw.len() + 2..].trim();
             let column = unquote_column(col_part)?;
             let value = unquote_value(val_part);
+            let value_lower = value.to_lowercase();
             return Some(SimpleFilter {
                 column,
                 op: kw.to_string(),
                 value,
+                value_lower,
             });
         }
     }
@@ -49,10 +55,12 @@ fn parse_simple_filter(filter: &str) -> Option<SimpleFilter> {
             }
             let column = unquote_column(col_part)?;
             let value = unquote_value(val_part);
+            let value_lower = value.to_lowercase();
             return Some(SimpleFilter {
                 column,
                 op: op.to_string(),
                 value,
+                value_lower,
             });
         }
     }
@@ -109,16 +117,10 @@ fn cell_matches_filter(cell_text: &str, filter: &SimpleFilter) -> bool {
                 }
             }
         }
-        "LIKE" => sql_like_match(cell_text, &filter.value, true),
-        "ILIKE" => sql_like_match(cell_text, &filter.value, false),
-        "IS" => {
-            let upper_val = filter.value.to_uppercase();
-            if upper_val == "NULL" {
-                false
-            } else {
-                false
-            }
-        }
+        "LIKE" => sql_like_match(cell_text, &filter.value, &filter.value_lower, true),
+        "ILIKE" => sql_like_match(cell_text, &filter.value, &filter.value_lower, false),
+        // IS NULL for non-null cells always returns false; null cells are handled above.
+        "IS" => false,
         "IS NOT" => {
             let upper_val = filter.value.to_uppercase();
             upper_val == "NULL"
@@ -127,18 +129,13 @@ fn cell_matches_filter(cell_text: &str, filter: &SimpleFilter) -> bool {
     }
 }
 
-fn sql_like_match(text: &str, pattern: &str, case_sensitive: bool) -> bool {
-    let text = if case_sensitive {
-        text.to_string()
+fn sql_like_match(text: &str, pattern: &str, pattern_lower: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        like_match(text.as_bytes(), pattern.as_bytes())
     } else {
-        text.to_lowercase()
-    };
-    let pattern = if case_sensitive {
-        pattern.to_string()
-    } else {
-        pattern.to_lowercase()
-    };
-    like_match(text.as_bytes(), pattern.as_bytes())
+        let text_lower = text.to_lowercase();
+        like_match(text_lower.as_bytes(), pattern_lower.as_bytes())
+    }
 }
 
 fn like_match(text: &[u8], pattern: &[u8]) -> bool {
@@ -174,12 +171,11 @@ fn like_match(text: &[u8], pattern: &[u8]) -> bool {
 fn search_matcher_from_app(app: &App) -> Option<SearchMatcher> {
     let tab = app.tab();
     let term = tab.search.active_search.as_ref()?;
-    let is_regex = tab.search.search_mode == SearchMode::Regex;
-    SearchMatcher::new(term, is_regex)
+    SearchMatcher::new(term)
 }
 
 /// Styler for the normal table view: row/column selection, search highlighting, filter highlighting.
-struct NormalStyler {
+struct NormalStyler<'a> {
     /// Buffer-relative index of the selected row (selected_row - buffer_offset).
     selected_data_row: usize,
     col_select_active: bool,
@@ -189,14 +185,21 @@ struct NormalStyler {
     highlight_col_idx: Option<usize>,
     /// Buffer-relative row index of the current search match (for distinct highlighting).
     current_match_data_row: Option<usize>,
+    /// Marked rows, keyed by buffer-relative row index.
+    marked_rows: &'a HashSet<usize>,
+    /// Buffer offset to convert buffer-relative rows to absolute rows.
+    buffer_offset: usize,
     // Theme colors
     selected_bg: Color,
+    mark_bg: Color,
     null_fg: Color,
     search_match_fg: Color,
     search_match_bg: Color,
+    search_other_fg: Color,
+    search_other_bg: Color,
 }
 
-impl TableStyler for NormalStyler {
+impl TableStyler for NormalStyler<'_> {
     fn col_header_style(&self, col_idx: usize, base: Style) -> Style {
         if self.col_select_active && col_idx == self.selected_col {
             base.bg(self.selected_bg)
@@ -208,18 +211,25 @@ impl TableStyler for NormalStyler {
     fn row_prefix(&self, data_row: usize) -> (&str, Style) {
         let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
-        if show_highlight {
-            (">> ", Style::default().bg(self.selected_bg).fg(Color::Yellow))
-        } else {
-            ("   ", Style::default())
+        let abs_row = self.buffer_offset + data_row;
+        let is_marked = self.marked_rows.contains(&abs_row);
+        match (show_highlight, is_marked) {
+            (true, true) => ("*> ", Style::default().bg(self.selected_bg).fg(Color::Yellow)),
+            (true, false) => (">> ", Style::default().bg(self.selected_bg).fg(Color::Yellow)),
+            (false, true) => (" * ", Style::default().fg(Color::Yellow)),
+            (false, false) => ("   ", Style::default()),
         }
     }
 
     fn row_bg(&self, data_row: usize) -> Style {
         let is_selected = data_row == self.selected_data_row;
         let show_highlight = is_selected && !self.col_select_active;
+        let abs_row = self.buffer_offset + data_row;
+        let is_marked = self.marked_rows.contains(&abs_row);
         if show_highlight {
             Style::default().bg(self.selected_bg)
+        } else if is_marked {
+            Style::default().bg(self.mark_bg)
         } else {
             Style::default()
         }
@@ -241,6 +251,13 @@ impl TableStyler for NormalStyler {
         };
 
         if is_null {
+            if !is_col_selected && self.highlight_col_idx == Some(col_idx) {
+                if let Some(ref sf) = self.simple_filter {
+                    if sf.op == "IS" && sf.value.eq_ignore_ascii_case("NULL") {
+                        return ("NULL".to_string(), base_style.fg(Color::Yellow));
+                    }
+                }
+            }
             return ("NULL".to_string(), base_style.fg(self.null_fg));
         }
 
@@ -270,7 +287,7 @@ impl TableStyler for NormalStyler {
                         .bg(self.search_match_bg)
                         .add_modifier(ratatui::style::Modifier::BOLD);
                 } else {
-                    style = style.fg(Color::Yellow).bg(self.search_match_fg);
+                    style = style.fg(self.search_other_fg).bg(self.search_other_bg);
                 }
             }
         }
@@ -291,6 +308,7 @@ impl<'a> TableView<'a> {
 
 impl Widget for TableView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.app.table_area.set(area);
         let tab = self.app.tab();
         let theme = &self.app.theme;
         let schema = match tab.data.schema.as_ref() {
@@ -366,53 +384,87 @@ impl Widget for TableView<'_> {
             simple_filter,
             highlight_col_idx,
             current_match_data_row,
+            marked_rows: &tab.marked_rows,
+            buffer_offset: tab.data.buffer_offset,
             selected_bg: theme.selected_bg,
+            mark_bg: theme.mark_bg,
             null_fg: theme.null_fg,
             search_match_fg: theme.search_match_fg,
             search_match_bg: theme.search_match_bg,
+            search_other_fg: theme.search_other_fg,
+            search_other_bg: theme.search_other_bg,
         };
-
-        // Build per-column width overrides
-        let overrides = &tab.viewport.col_width_overrides;
-        let default_max: u16 = crate::ui::table_render::DEFAULT_MAX_COL_WIDTH;
-
-        // For columns with positive override: set a minimum width so they actually expand.
-        // For columns with negative override: cap reduces below default.
-        let col_mins: Vec<(usize, u16)> = overrides
-            .iter()
-            .enumerate()
-            .filter(|&(_, v)| *v > 0)
-            .map(|(i, v)| (i, (default_max as i16 + v).max(4) as u16))
-            .collect();
-
-        let col_caps: Vec<u16> = if overrides.is_empty() {
-            vec![default_max; schema.fields().len()]
-        } else {
-            overrides
-                .iter()
-                .map(|v| (default_max as i16 + v).max(4) as u16)
-                .collect()
-        };
-        let global_max = col_caps.iter().copied().max().unwrap_or(default_max);
 
         let hidden = &tab.hidden_columns;
+
+        // Column width caching: compute sample range and check cache
+        let data_area_height = (area.height as usize).saturating_sub(1);
+        let sample_start = view_off;
+        let sample_end = (view_off + data_area_height).min(batch.num_rows());
+        let generation = tab.data.batch_generation;
+
+        let cache_hit = {
+            let cache_ref = tab.col_width_cache.borrow();
+            cache_ref.as_ref().map_or(false, |c| {
+                c.generation == generation
+                    && c.sample_start == sample_start
+                    && c.sample_end == sample_end
+            })
+        };
+
+        if !cache_hit {
+            use crate::ui::table_render::{build_formatters, compute_column_widths, sort_indicator_string, DEFAULT_MAX_COL_WIDTH};
+            let formatters = build_formatters(batch);
+            let sort_state = &tab.data.sort_state;
+            let multi = sort_state.specs().len() > 1;
+            let (headers, col_widths) = compute_column_widths(
+                schema,
+                batch,
+                &formatters,
+                &|_i, name, type_str| {
+                    let sort_ind = sort_indicator_string(sort_state, name, multi);
+                    format!("{} [{}]{}", name, type_str, sort_ind)
+                },
+                (sample_start, sample_end),
+                DEFAULT_MAX_COL_WIDTH,
+            );
+            *tab.col_width_cache.borrow_mut() = Some(crate::state::ColWidthCache {
+                generation,
+                sample_start,
+                sample_end,
+                headers,
+                col_widths,
+            });
+        }
+
+        let cache_ref = tab.col_width_cache.borrow();
+        let cached = cache_ref.as_ref().unwrap();
+
+        let rows_rendered_cell = std::cell::Cell::new(0usize);
 
         let mut table = UnifiedTable::new(schema, batch, &styler)
             .scroll_offset(view_off)
             .column_offset(tab.viewport.column_offset)
             .sort_state(&tab.data.sort_state)
-            .max_col_width(global_max)
-            .col_width_caps(&col_caps)
             .row_numbers(tab.data.buffer_offset, tab.data.total_rows)
-            .theme(theme);
+            .theme(theme)
+            .precomputed_widths(&cached.headers, &cached.col_widths)
+            .wrap(self.app.wrap)
+            .frozen_cols(tab.viewport.frozen_cols)
+            .rows_rendered(&rows_rendered_cell);
 
-        if !col_mins.is_empty() {
-            table = table.col_width_mins(&col_mins);
-        }
         if !hidden.is_empty() {
             table = table.hidden(hidden);
         }
 
         table.render(area, buf);
+
+        // When wrapping, report how many rows actually fit so page_size can be updated
+        if self.app.wrap {
+            let rendered = rows_rendered_cell.get();
+            if rendered > 0 {
+                tab.viewport.rendered_rows.set(rendered);
+            }
+        }
     }
 }

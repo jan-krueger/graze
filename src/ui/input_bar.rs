@@ -3,7 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::app::{App, AppMode};
+use crate::app::App;
+use crate::mode::{AppMode, InputVariant};
 
 pub struct InputBar<'a> {
     app: &'a App,
@@ -21,10 +22,9 @@ impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let theme = &self.app.theme;
         let style = Style::default().fg(theme.input_fg).bg(theme.input_bg);
-        let prompt_color = match self.app.mode {
-            AppMode::Regex => ratatui::style::Color::Magenta,
-            AppMode::Filter => ratatui::style::Color::Green,
-            AppMode::GoToRow => ratatui::style::Color::Blue,
+        let prompt_color = match &self.app.mode {
+            AppMode::Input(InputVariant::Filter) => ratatui::style::Color::Green,
+            AppMode::Input(InputVariant::GoToRow) => ratatui::style::Color::Blue,
             _ => ratatui::style::Color::Yellow,
         };
         buf.set_string(

@@ -1,29 +1,21 @@
-mod columns;
-mod diff;
-mod filter;
-mod goto;
-mod help;
+mod input;
+pub(crate) mod mouse;
 mod normal;
-mod search;
+mod overlay;
+pub(crate) mod search;
 mod sql;
-mod stats;
 
 use crossterm::event::KeyEvent;
 
-use crate::app::{App, AppMode};
+use crate::app::App;
+use crate::mode::AppMode;
 
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
-    match app.mode {
+    match &app.mode {
         AppMode::Normal => normal::handle_key(app, key),
-        AppMode::Filter | AppMode::Search | AppMode::Regex => filter::handle_key(app, key),
+        AppMode::Input(_) => input::handle_key(app, key),
         AppMode::Sql => sql::handle_key(app, key),
-        AppMode::Stats => stats::handle_key(app, key),
-        AppMode::DiffSetupKey => diff::handle_setup_key(app, key),
-        AppMode::DiffSetupCols => diff::handle_setup_cols(app, key),
-        AppMode::Diff => diff::handle_diff(app, key),
-        AppMode::GoToRow => goto::handle_key(app, key),
-        AppMode::ColumnHide => columns::handle_key(app, key),
-        AppMode::Help => help::handle_key(app, key),
+        AppMode::Overlay(_) => overlay::handle_key(app, key),
         AppMode::Quitting => {}
     }
 }

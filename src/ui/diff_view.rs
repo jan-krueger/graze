@@ -5,19 +5,20 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::App;
 use crate::diff::DiffPageData;
-use crate::state::DiffMarker;
+use crate::state::{DiffMarker, DiffState};
 use crate::ui::table_render::{TableStyler, UnifiedTable};
 use crate::ui::theme::Theme;
 
 pub struct DiffView<'a> {
-    app: &'a App,
+    diff: &'a DiffState,
+    theme: &'a Theme,
+    spinner_char: char,
 }
 
 impl<'a> DiffView<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self { app }
+    pub fn new(diff: &'a DiffState, theme: &'a Theme, spinner_char: char) -> Self {
+        Self { diff, theme, spinner_char }
     }
 }
 
@@ -160,8 +161,7 @@ impl TableStyler for DiffStyler<'_> {
 }
 
 /// Build the "old → new" preview string for the current cell, if it's a changed cell.
-fn build_cell_preview(app: &App) -> Option<String> {
-    let diff = &app.diff;
+pub fn build_cell_preview(diff: &DiffState) -> Option<String> {
     let data_row = diff.display_to_data_row(diff.selected_row);
     let col = diff.selected_col;
 
@@ -219,7 +219,7 @@ fn build_cell_preview(app: &App) -> Option<String> {
 /// based on scroll_offset and available height, returning a (batch, changed_cells, row_indices)
 /// tuple that is ready for the UnifiedTable.
 fn build_render_data<'a>(
-    diff: &'a crate::state::DiffState,
+    diff: &'a DiffState,
     page: &'a DiffPageData,
 ) -> (
     &'a duckdb::arrow::record_batch::RecordBatch,
@@ -227,20 +227,6 @@ fn build_render_data<'a>(
     &'a [usize],
     usize, // scroll_offset within the render batch
 ) {
-    // The page contains a buffer of rows. We need to figure out which
-    // portion of the page corresponds to the visible screen.
-    //
-    // In normal mode: page.row_indices are contiguous data rows.
-    //   scroll_offset is in display-row space = data-row space.
-    //   We need to find where scroll_offset falls in page.row_indices.
-    //
-    // In hide_common mode: page.row_indices are the data rows for
-    //   visible_rows[buffer_start..buffer_end]. scroll_offset is in
-    //   display-row (visible_rows index) space. We need to map it
-    //   to the page's row_indices.
-
-    // The page IS the render batch. scroll_offset into the page is computed
-    // by finding where the viewport start falls within page.row_indices.
     let viewport_start_data_row = diff.display_to_data_row(diff.scroll_offset);
 
     let page_scroll = page
@@ -263,8 +249,8 @@ impl Widget for DiffView<'_> {
             return;
         }
 
-        let diff = &self.app.diff;
-        let theme = &self.app.theme;
+        let diff = self.diff;
+        let theme = self.theme;
 
         // Header bar (1 row)
         let header_y = area.y;
@@ -281,8 +267,7 @@ impl Widget for DiffView<'_> {
         );
 
         if diff.loading {
-            let spinner = self.app.spinner_char();
-            let msg = format!("{} Computing diff...", spinner);
+            let msg = format!("{} Computing diff...", self.spinner_char);
             buf.set_string(area.x + 1, header_y, &msg, header_style);
             return;
         }
@@ -330,7 +315,7 @@ impl Widget for DiffView<'_> {
 
         // Right side of header: cell preview or position indicator
         if visible_count > 0 {
-            let preview = build_cell_preview(self.app);
+            let preview = build_cell_preview(diff);
             let right_text = if let Some(ref pv) = preview {
                 let pos = format!("{}/{}", diff.selected_row + 1, visible_count);
                 format!(" {} | {} ", pv, pos)

@@ -1,8 +1,11 @@
 pub mod app;
 pub mod diff;
+pub mod diff_app;
 pub mod event;
 mod handlers;
+pub mod input;
 mod keybindings;
+pub mod mode;
 pub mod provider;
 pub mod search;
 pub mod state;

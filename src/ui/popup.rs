@@ -78,7 +78,7 @@ impl<'a> Popup<'a> {
         let top_border = format!(
             "\u{250c}\u{2500} {} {}\u{2510}",
             self.title,
-            "\u{2500}".repeat(popup_width.saturating_sub(self.title.width() + 4))
+            "\u{2500}".repeat(popup_width.saturating_sub(self.title.width() + 3))
         );
         buf.set_string(popup_x, popup_y, &top_border, border_style);
         buf.set_string(popup_x + 3, popup_y, self.title, title_style);
@@ -106,7 +106,7 @@ impl<'a> Popup<'a> {
         let footer_padded = format!(
             "\u{2514} {} {}\u{2518}",
             self.footer,
-            "\u{2500}".repeat(popup_width.saturating_sub(self.footer.width() + 3))
+            "\u{2500}".repeat(popup_width.saturating_sub(self.footer.width() + 2))
         );
         buf.set_string(popup_x, bottom_y, &footer_padded, border_style);
         buf.set_string(popup_x + 2, bottom_y, self.footer, dim_style);

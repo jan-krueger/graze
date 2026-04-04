@@ -1,7 +1,8 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::{App, AppMode};
+use crate::app::App;
 use crate::event::Action;
+use crate::mode::AppMode;
 
 pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
@@ -33,12 +34,7 @@ pub(crate) fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Esc => {
-            // Exit SQL mode, clear result, restore original view
-            app.mode = AppMode::Normal;
-            app.sql.result = None;
-            app.sql.result_schema = None;
-            app.sql.error = None;
-            app.status_message = None;
+            app.transition_to(AppMode::Normal);
         }
         KeyCode::Backspace => {
             if app.sql.cursor_col > 0 {

@@ -24,6 +24,8 @@ pub struct Theme {
     pub header_fg: Color,
     pub search_match_fg: Color,
     pub search_match_bg: Color,
+    pub search_other_fg: Color,
+    pub search_other_bg: Color,
 
     // Bars
     pub status_bg: Color,
@@ -42,9 +44,14 @@ pub struct Theme {
     pub diff_header_bg: Color,
     pub diff_header_fg: Color,
 
+    // Marks
+    pub mark_bg: Color,
+
     // Popups / overlays
     pub popup_border: Color,
     pub popup_title: Color,
+    pub overlay_header_bg: Color,
+    pub overlay_header_fg: Color,
 }
 
 impl Theme {
@@ -67,6 +74,8 @@ impl Theme {
             header_fg: Color::Cyan,
             search_match_fg: Color::Black,
             search_match_bg: Color::Yellow,
+            search_other_fg: Color::Yellow,
+            search_other_bg: Color::DarkGray,
 
             status_bg: Color::DarkGray,
             status_fg: Color::White,
@@ -77,6 +86,8 @@ impl Theme {
             tab_active_bg: Color::Blue,
             tab_active_fg: Color::White,
 
+            mark_bg: Color::Rgb(40, 40, 60),
+
             diff_added: Color::Green,
             diff_removed: Color::Red,
             diff_changed: Color::Yellow,
@@ -85,6 +96,8 @@ impl Theme {
 
             popup_border: Color::Cyan,
             popup_title: Color::Cyan,
+            overlay_header_bg: Color::Cyan,
+            overlay_header_fg: Color::Black,
         }
     }
 
@@ -107,6 +120,8 @@ impl Theme {
             header_fg: Color::Rgb(0, 139, 139),
             search_match_fg: Color::Black,
             search_match_bg: Color::Yellow,
+            search_other_fg: Color::Rgb(180, 142, 0),
+            search_other_bg: Color::Rgb(255, 255, 200),
 
             status_bg: Color::Gray,
             status_fg: Color::Black,
@@ -117,6 +132,8 @@ impl Theme {
             tab_active_bg: Color::Blue,
             tab_active_fg: Color::White,
 
+            mark_bg: Color::Rgb(230, 230, 255),
+
             diff_added: Color::Green,
             diff_removed: Color::Red,
             diff_changed: Color::Rgb(180, 142, 0),
@@ -125,6 +142,8 @@ impl Theme {
 
             popup_border: Color::Rgb(0, 139, 139),
             popup_title: Color::Rgb(0, 139, 139),
+            overlay_header_bg: Color::Rgb(0, 139, 139),
+            overlay_header_fg: Color::White,
         }
     }
 
